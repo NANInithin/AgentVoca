@@ -10,8 +10,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # Python 3.13 excluded: pyautogui depends on python3-xlib on Linux,
+        # which is a source-only package from 2014 with no Python 3.13 support.
+        python-version: ["3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4

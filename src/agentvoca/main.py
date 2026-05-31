@@ -91,9 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(debug=args.debug)
 
     # ── Config ───────────────────────────────────────────────────────
-    config_path = (
-        Path(args.config).expanduser().resolve() if args.config else _DEFAULT_CONFIG_PATH
-    )
+    config_path = Path(args.config).expanduser().resolve() if args.config else _DEFAULT_CONFIG_PATH
 
     try:
         if config_path.is_file():

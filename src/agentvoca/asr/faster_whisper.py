@@ -63,9 +63,13 @@ class FasterWhisperProvider(ASRProvider):
         self._compute_type = config.extra.get("compute_type", "default")
 
     _SIZE_HINTS: dict[str, str] = {
-        "tiny": "~75 MB", "base": "~145 MB", "small": "~460 MB",
-        "medium": "~1.5 GB", "large": "~3 GB",
-        "large-v2": "~3 GB", "large-v3": "~3 GB",
+        "tiny": "~75 MB",
+        "base": "~145 MB",
+        "small": "~460 MB",
+        "medium": "~1.5 GB",
+        "large": "~3 GB",
+        "large-v2": "~3 GB",
+        "large-v3": "~3 GB",
     }
 
     def _get_model(self) -> WhisperModel:
@@ -82,26 +86,37 @@ class FasterWhisperProvider(ASRProvider):
         if self._device == "auto":
             devices = [("cuda", "float16"), ("cpu", "int8")]
         else:
-            compute = self._compute_type if self._compute_type != "default" else (
-                "float16" if self._device == "cuda" else "int8"
+            compute = (
+                self._compute_type
+                if self._compute_type != "default"
+                else ("float16" if self._device == "cuda" else "int8")
             )
             devices = [(self._device, compute)]
 
         import os
+
         cache_dir = os.path.join(
-            os.path.expanduser("~"), ".cache", "huggingface", "hub",
+            os.path.expanduser("~"),
+            ".cache",
+            "huggingface",
+            "hub",
             f"models--Systran--faster-whisper-{self._model_size}",
         )
         already_cached = os.path.isdir(cache_dir)
-        loading_note = "loading from cache…" if already_cached else (
-            f"first run downloads {hint_str.strip('() ')} of model weights, please wait…"
+        loading_note = (
+            "loading from cache…"
+            if already_cached
+            else (f"first run downloads {hint_str.strip('() ')} of model weights, please wait…")
         )
 
         last_error: Exception | None = None
         for device, compute_type in devices:
             logger.info(
                 "Loading faster-whisper '%s' on %s (%s) — %s",
-                self._model_size, device, compute_type, loading_note,
+                self._model_size,
+                device,
+                compute_type,
+                loading_note,
             )
             try:
                 self._model = WhisperModel(
@@ -125,9 +140,7 @@ class FasterWhisperProvider(ASRProvider):
                 # Non-CUDA error or already on CPU — do not retry
                 break
 
-        raise ASRError(
-            f"Failed to load faster-whisper model '{self._model_size}': {last_error}"
-        )
+        raise ASRError(f"Failed to load faster-whisper model '{self._model_size}': {last_error}")
 
     def get_name(self) -> str:
         """Return the registry key for this provider."""
@@ -183,9 +196,7 @@ class FasterWhisperProvider(ASRProvider):
             )
         except Exception as e:
             err_lower = str(e).lower()
-            is_cuda_error = any(
-                kw in err_lower for kw in ("cuda", "cublas", "cudnn", "cublaslt")
-            )
+            is_cuda_error = any(kw in err_lower for kw in ("cuda", "cublas", "cudnn", "cublaslt"))
             if is_cuda_error:
                 # Model loaded on CUDA but inference libs are missing at runtime.
                 # Reset so _get_model() reloads on CPU on the next attempt.

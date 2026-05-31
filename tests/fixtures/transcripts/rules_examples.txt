@@ -1,0 +1,11 @@
+input: "uhm so like basically it works i mean"
+output: "So it works."
+style: "standard"
+---
+input: "this is a test of the emergency broadcast system uh we are testing"
+output: "This is a test of the emergency broadcast system. We are testing."
+style: "standard"
+---
+input: "check the url https://google.com and the path /usr/local/bin and the flag --verbose"
+output: "Check the URL https://google.com and the path /usr/local/bin and the flag --verbose."
+style: "technical"

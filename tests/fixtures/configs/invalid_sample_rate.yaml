@@ -1,0 +1,5 @@
+asr:
+  provider: faster_whisper
+
+audio:
+  sample_rate: 96000

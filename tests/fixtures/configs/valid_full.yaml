@@ -1,0 +1,46 @@
+app:
+  profile: technical
+  language: en
+  mode: toggle
+  debug: true
+
+audio:
+  input_device: "Microphone (Realtek)"
+  sample_rate: 44100
+  channels: 1
+  vad_enabled: true
+  silence_timeout_ms: 500
+  max_recording_duration_s: 60
+
+asr:
+  provider: openai_compatible
+  model: whisper-1
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  language_hint: en
+
+cleanup:
+  provider: openai_compatible
+  model: gpt-4o-mini
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  style: professional
+  preserve_code: true
+
+insertion:
+  strategy: keyboard
+  clipboard_fallback: true
+  delay_between_chars_ms: 5
+
+hotkeys:
+  toggle_recording: ctrl+shift+space
+  open_settings: ctrl+alt+s
+  insert_last_transcript: ctrl+shift+v
+  cancel: escape
+
+vocabulary:
+  path: /path/to/vocab.txt
+  inline: ["PyTorch", "CUDA", "API"]
+
+snippets:
+  path: /path/to/snippets.yaml

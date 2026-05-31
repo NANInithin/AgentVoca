@@ -1,0 +1,4 @@
+# Minimal valid config for testing
+asr:
+  provider: faster_whisper
+  model: large-v3

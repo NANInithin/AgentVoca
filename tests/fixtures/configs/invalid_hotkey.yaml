@@ -1,0 +1,5 @@
+asr:
+  provider: faster_whisper
+
+hotkeys:
+  toggle_recording: invalid+key+here

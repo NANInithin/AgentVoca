@@ -1,0 +1,12 @@
+# AgentVoca config: local Whisper + OpenAI cleanup
+asr:
+  provider: faster_whisper
+  model: base.en
+
+cleanup:
+  provider: openai_compatible
+  model: gpt-4o-mini
+  endpoint: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  style: standard
+  preserve_code: true

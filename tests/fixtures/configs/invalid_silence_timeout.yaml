@@ -1,0 +1,6 @@
+
+asr:
+  provider: faster_whisper
+
+audio:
+  silence_timeout_ms: -100

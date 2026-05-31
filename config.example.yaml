@@ -1,0 +1,39 @@
+# AgentVoca configuration example
+# Copy this file to ~/.agentvoca/config.yaml and edit.
+# See docs/config-reference.md for all available options.
+
+app:
+  profile: standard
+  language: auto
+  mode: toggle
+  debug: false
+
+audio:
+  input_device: default
+  sample_rate: 16000
+  vad_enabled: true
+  silence_timeout_ms: 900
+
+asr:
+  provider: faster_whisper
+  model: large-v3
+
+cleanup:
+  provider: rules
+  style: standard
+
+insertion:
+  strategy: keyboard
+  clipboard_fallback: true
+
+hotkeys:
+  toggle_recording: ctrl+space
+  open_settings: ctrl+alt+comma
+  insert_last_transcript: ctrl+enter
+  cancel: escape
+
+vocabulary:
+  path: ~/.agentvoca/vocab.txt
+
+snippets:
+  path: ~/.agentvoca/snippets.yaml

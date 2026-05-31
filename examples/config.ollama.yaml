@@ -1,0 +1,12 @@
+# AgentVoca config: local Whisper + local Ollama cleanup
+asr:
+  provider: faster_whisper
+  model: large-v3
+
+cleanup:
+  provider: openai_compatible
+  model: llama3.1:8b
+  endpoint: http://localhost:11434/v1
+  api_key_env: null
+  style: technical
+  preserve_code: true

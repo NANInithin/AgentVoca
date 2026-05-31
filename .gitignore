@@ -1,0 +1,83 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.whl
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env/
+
+# ── Environment / secrets ──────────────────────────────────────────────────────
+# Never commit API keys or personal config
+.env
+.env.*
+*.local
+
+# ── uv ────────────────────────────────────────────────────────────────────────
+# uv.lock IS committed (reproducible installs); .venv is not
+.python-version
+
+# ── PyInstaller ───────────────────────────────────────────────────────────────
+# Build artifacts — committed files are AgentVoca.spec and version_info.txt
+dist/
+build/
+*.manifest
+
+# ── Test / lint caches ────────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── User config (runtime, not source) ─────────────────────────────────────────
+# The user's ~/.agentvoca/ is outside the repo; guard against accidental inclusion
+*.agentvoca/
+agentvoca.log
+*.log
+
+# ── HuggingFace model cache ───────────────────────────────────────────────────
+# Models are downloaded at runtime; never commit 3 GB of weights
+.cache/
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── Internal agent / planning documents ───────────────────────────────────────
+# These are AI-agent workflow files used during development; not for public repo
+agent_rules.md
+ai_agent_build_plan.md
+ARCHITECTURE.md
+voice_dictation_project_outline.md
+
+# ── Temporary / scratch files ─────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+$_.FullName

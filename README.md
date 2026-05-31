@@ -21,32 +21,6 @@ result inserted directly at the cursor in the active application.
 
 ---
 
-## Providers
-
-### ASR
-
-| Name | Config value | Notes |
-|---|---|---|
-| faster-whisper (local) | `faster_whisper` | Default. Runs on CPU or GPU. Requires model download on first use. |
-| OpenAI-compatible API | `openai_compatible` | Works with OpenAI Whisper API, Groq, self-hosted endpoints. |
-
-### Cleanup
-
-| Name | Config value | Notes |
-|---|---|---|
-| Rules-based | `rules` | Default. Deterministic filler removal + punctuation. No API key needed. |
-| OpenAI-compatible LLM | `openai_compatible` | Sends transcript to any chat-completions endpoint. |
-| None (pass-through) | `none` | Inserts the raw transcript exactly as transcribed. |
-
-### Insertion
-
-| Name | Config value | Notes |
-|---|---|---|
-| Keyboard simulation | `keyboard` | Default. Uses pyautogui to type at the cursor. |
-| Clipboard paste | `clipboard` | Writes to clipboard and sends Ctrl+V / Cmd+V. |
-
----
-
 ## Quickstart
 
 ### 1. Install
@@ -84,20 +58,41 @@ The app starts in the system tray. Press **Ctrl+Space** (default) to start and s
 
 ---
 
-## Minimal config
+## Zero-config / No API Key
+
+AgentVoca works **out of the box with no API key**. The default configuration uses:
+
+- **faster-whisper** for local, offline transcription
+- **rules-based cleanup** for deterministic filler removal and punctuation — no LLM, no API key needed
+
+Use this minimal config to get started immediately:
 
 ```yaml
 asr:
   provider: faster_whisper
-  model: large-v3
+  model: base.en        # fast, offline — swap for large-v3 for higher accuracy
+
+cleanup:
+  provider: rules       # no API key required
 ```
 
-The first run downloads the model (~3 GB for large-v3). Use `base` or `small` for faster
-startup and lower memory use at the cost of accuracy.
+The first run downloads the Whisper model (~145 MB for `base.en`, ~3 GB for `large-v3`).
+Use `base` or `small` for faster startup and lower memory use.
+
+> **Troubleshooting:** If you see `Config validation failed: ... requires an API key`, your
+> config has `cleanup.provider: openai_compatible` set. Either set the required environment
+> variable (see [Config with LLM cleanup](#config-with-llm-cleanup) below) or switch to
+> `cleanup.provider: rules` to run without any API key.
 
 ---
 
-## Config with OpenAI cleanup
+## Config with LLM cleanup
+
+To upgrade cleanup quality with an LLM, set `cleanup.provider: openai_compatible` and point
+it at any OpenAI-compatible endpoint. The app will refuse to start if the required API key
+environment variable is missing.
+
+**OpenAI**
 
 ```yaml
 asr:
@@ -111,8 +106,71 @@ cleanup:
   style: standard
 ```
 
-Set `OPENAI_API_KEY` in your environment before running. See `examples/` for more
-configuration examples including Ollama and local API servers.
+```powershell
+# Windows — set permanently for your user account
+[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
+```
+
+**OpenRouter** (access 200+ models with one key)
+
+```yaml
+cleanup:
+  provider: openai_compatible
+  endpoint: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+  model: openai/gpt-4o-mini
+  style: standard
+```
+
+**Ollama (local LLM, no API key)**
+
+```yaml
+cleanup:
+  provider: openai_compatible
+  endpoint: http://localhost:11434/v1
+  api_key_env: ""          # leave empty — Ollama needs no key
+  model: llama3
+  style: standard
+```
+
+**Groq**
+
+```yaml
+cleanup:
+  provider: openai_compatible
+  endpoint: https://api.groq.com/openai/v1
+  api_key_env: GROQ_API_KEY
+  model: llama3-8b-8192
+  style: standard
+```
+
+See `examples/` for more configuration examples.
+
+---
+
+## Providers
+
+### ASR
+
+| Name | Config value | Notes |
+|---|---|---|
+| faster-whisper (local) | `faster_whisper` | Default. Runs on CPU or GPU. Requires model download on first use. |
+| OpenAI-compatible API | `openai_compatible` | Works with OpenAI Whisper API, Groq, self-hosted endpoints. |
+
+### Cleanup
+
+| Name | Config value | Notes |
+|---|---|---|
+| Rules-based | `rules` | **Default. No API key needed.** Deterministic filler removal + punctuation. |
+| OpenAI-compatible LLM | `openai_compatible` | Sends transcript to any chat-completions endpoint. Requires API key env var. |
+| None (pass-through) | `none` | Inserts the raw transcript exactly as transcribed. |
+
+### Insertion
+
+| Name | Config value | Notes |
+|---|---|---|
+| Keyboard simulation | `keyboard` | Default. Uses pyautogui to type at the cursor. |
+| Clipboard paste | `clipboard` | Writes to clipboard and sends Ctrl+V / Cmd+V. |
 
 ---
 

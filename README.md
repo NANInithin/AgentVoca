@@ -11,8 +11,7 @@ result inserted directly at the cursor in the active application.
 
 - **Model-agnostic** — swap ASR or LLM providers with a one-line config change
 - **Local-first** — runs entirely offline with faster-whisper; no data leaves the machine
-- **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are
-  never mangled by the LLM
+- **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are never mangled by the LLM
 - **Vocabulary substitution** — teach the app correct casing for your domain terms
 - **Snippet expansion** — expand short triggers into full phrases
 - **Push-to-talk, toggle, and VAD auto-stop** recording modes
@@ -21,23 +20,83 @@ result inserted directly at the cursor in the active application.
 
 ---
 
-## Quickstart
+## Installation
 
-### 1. Install
+Choose one of the two paths below depending on how you want to use AgentVoca.
+
+---
+
+### Option A — Download the `.exe` (Windows, no Python needed)
+
+This is the recommended path for most users.
+
+**Step 1 — Download the release**
+
+Go to the [Releases page](https://github.com/NANInithin/AgentVoca/releases) and download
+the latest `AgentVoca-vX.X.X-windows-x64.zip`. Extract it anywhere on your machine.
+
+**Step 2 — Create the config folder**
+
+AgentVoca looks for its config file at a fixed location. You need to create this folder
+once before running the app for the first time.
+
+Open PowerShell and run:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca"
+```
+
+**Step 3 — Create your config file**
+
+Download [`config.example.yaml`](https://github.com/NANInithin/AgentVoca/blob/main/config.example.yaml)
+from the repo and save it as `config.yaml` inside the folder you just created:
+
+```
+C:\Users\<YourName>\.agentvoca\config.yaml
+```
+
+Or do it in one PowerShell command:
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/NANInithin/AgentVoca/main/config.example.yaml" `
+  -OutFile "$env:USERPROFILE\.agentvoca\config.yaml"
+```
+
+**Step 4 — Run the app**
+
+Double-click `AgentVoca.exe` inside the extracted folder. The app starts in the system tray.
+Press **Ctrl+Space** to start and stop recording.
+
+> No API key is needed by default. The app uses local faster-whisper + rules-based cleanup
+> out of the box. See [Cleanup Providers](#cleanup-providers) if you want LLM-powered cleanup.
+
+---
+
+### Option B — Run from source (Python, all platforms)
+
+This path is for developers or macOS/Linux users.
+
+**Step 1 — Clone the repo**
+
+```bash
+git clone https://github.com/NANInithin/AgentVoca.git
+cd AgentVoca
+```
+
+**Step 2 — Install dependencies**
 
 ```bash
 # requires Python 3.11+ and uv (https://docs.astral.sh/uv/)
 uv sync
 ```
 
-### 2. Create a config file
+**Step 3 — Create a config file**
 
 **macOS / Linux**
 
 ```bash
 mkdir -p ~/.agentvoca
 cp config.example.yaml ~/.agentvoca/config.yaml
-# edit ~/.agentvoca/config.yaml
 ```
 
 **Windows (PowerShell)**
@@ -45,10 +104,9 @@ cp config.example.yaml ~/.agentvoca/config.yaml
 ```powershell
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca" | Out-Null
 Copy-Item config.example.yaml "$env:USERPROFILE\.agentvoca\config.yaml"
-# edit $env:USERPROFILE\.agentvoca\config.yaml
 ```
 
-### 3. Run
+**Step 4 — Run**
 
 ```bash
 uv run agentvoca
@@ -58,47 +116,58 @@ The app starts in the system tray. Press **Ctrl+Space** (default) to start and s
 
 ---
 
+## Config file location
+
+Regardless of install method, AgentVoca always reads config from:
+
+| OS | Path |
+|---|---|
+| Windows | `C:\Users\<YourName>\.agentvoca\config.yaml` |
+| macOS / Linux | `~/.agentvoca/config.yaml` |
+
+You can override this with the `-c` flag: `agentvoca -c /path/to/my-config.yaml`
+
+---
+
 ## Zero-config / No API Key
 
-AgentVoca works **out of the box with no API key**. The default configuration uses:
+AgentVoca works **out of the box with no API key**. The default `config.yaml` uses:
 
 - **faster-whisper** for local, offline transcription
 - **rules-based cleanup** for deterministic filler removal and punctuation — no LLM, no API key needed
 
-Use this minimal config to get started immediately:
-
 ```yaml
 asr:
   provider: faster_whisper
-  model: base.en        # fast, offline — swap for large-v3 for higher accuracy
+  model: base.en        # fast and offline — swap for large-v3 for higher accuracy
 
 cleanup:
   provider: rules       # no API key required
 ```
 
 The first run downloads the Whisper model (~145 MB for `base.en`, ~3 GB for `large-v3`).
-Use `base` or `small` for faster startup and lower memory use.
 
 > **Troubleshooting:** If you see `Config validation failed: ... requires an API key`, your
 > config has `cleanup.provider: openai_compatible` set. Either set the required environment
-> variable (see [Config with LLM cleanup](#config-with-llm-cleanup) below) or switch to
-> `cleanup.provider: rules` to run without any API key.
+> variable or switch to `cleanup.provider: rules` to run without any API key.
 
 ---
 
-## Config with LLM cleanup
+## Cleanup Providers
 
-To upgrade cleanup quality with an LLM, set `cleanup.provider: openai_compatible` and point
-it at any OpenAI-compatible endpoint. The app will refuse to start if the required API key
-environment variable is missing.
-
-**OpenAI**
+### Rules (default — no API key)
 
 ```yaml
-asr:
-  provider: faster_whisper
-  model: large-v3
+cleanup:
+  provider: rules
+  style: standard
+```
 
+Deterministic filler removal and punctuation. Works offline. No key needed.
+
+### OpenAI
+
+```yaml
 cleanup:
   provider: openai_compatible
   endpoint: https://api.openai.com/v1
@@ -111,7 +180,7 @@ cleanup:
 [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
 ```
 
-**OpenRouter** (access 200+ models with one key)
+### OpenRouter (200+ models, one key)
 
 ```yaml
 cleanup:
@@ -122,7 +191,7 @@ cleanup:
   style: standard
 ```
 
-**Ollama (local LLM, no API key)**
+### Ollama (local LLM, no API key)
 
 ```yaml
 cleanup:
@@ -133,7 +202,7 @@ cleanup:
   style: standard
 ```
 
-**Groq**
+### Groq
 
 ```yaml
 cleanup:
@@ -148,7 +217,7 @@ See `examples/` for more configuration examples.
 
 ---
 
-## Providers
+## All Providers
 
 ### ASR
 

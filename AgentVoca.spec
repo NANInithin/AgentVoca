@@ -10,9 +10,15 @@
 # On macOS a .app bundle is created; on Windows a .exe is created.
 
 import sys
+import os
 from pathlib import Path
 
 ROOT = Path(SPECPATH)
+
+# Collect faster_whisper data files (ONNX VAD model, tokenizer, etc.)
+# PyInstaller does not auto-collect non-Python assets from packages.
+import faster_whisper as _fw
+FW_ASSETS = os.path.join(os.path.dirname(_fw.__file__), "assets")
 
 block_cipher = None
 
@@ -27,6 +33,8 @@ a = Analysis(
         (str(ROOT / "config.example.yaml"), "."),
         (str(ROOT / "examples"), "examples"),
         (str(ROOT / "docs"), "docs"),
+        # Bundle faster_whisper's ONNX assets (silero VAD model, tokenizer, etc.)
+        (FW_ASSETS, "faster_whisper/assets"),
     ],
     hiddenimports=[
         # silero-vad loads models via torch hub; ensure torch is included

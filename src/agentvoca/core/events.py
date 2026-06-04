@@ -135,6 +135,105 @@ class ErrorEvent:
 
 
 @dataclass
+class AudioChunkEvent:
+    """Published by the AudioChunker during recording (Chunker → Bus).
+
+    Attributes:
+        data: Raw PCM audio bytes for the chunk.
+        sample_rate: Sample rate of the audio data.
+        timestamp_ms: Timestamp of this chunk in milliseconds.
+        is_flush: True on the final flush at recording stop.
+    """
+
+    data: bytes
+    sample_rate: int
+    timestamp_ms: int
+    is_flush: bool = False
+
+
+@dataclass
+class PartialTranscriptEvent:
+    """Published when a streaming partial transcript is available.
+
+    Attributes:
+        text: Cumulative interim text for overlay display.
+    """
+
+    text: str
+
+
+@dataclass
+class SegmentFinalizedEvent:
+    """Published when a streaming ASR segment is finalized.
+
+    Attributes:
+        text: The finalized segment text.
+        index: Order of the finalized segment.
+    """
+
+    text: str
+    index: int
+
+
+@dataclass
+class WarmupCompleteEvent:
+    """Published when background warm-up completes.
+
+    Attributes:
+        asr_ready: True if ASR warm-up succeeded.
+        cleanup_ready: True if cleanup warm-up succeeded.
+        duration_ms: Total warm-up duration in milliseconds.
+    """
+
+    asr_ready: bool
+    cleanup_ready: bool
+    duration_ms: int
+
+
+@dataclass
+class ContextResolvedEvent:
+    """Published when the context engine resolves the current context.
+
+    Attributes:
+        app_name: Name of the currently active application, or None.
+        style: Resolved style profile, or None.
+        language: Resolved language hint, or None.
+    """
+
+    app_name: Optional[str] = None
+    style: Optional[str] = None
+    language: Optional[str] = None
+
+
+@dataclass
+class CommandRecognizedEvent:
+    """Published when a voice command is recognized.
+
+    Attributes:
+        action: The command action that was matched.
+        original_text: The original transcript text before command processing.
+    """
+
+    action: str
+    original_text: str
+
+
+@dataclass
+class CorrectionLearnedEvent:
+    """Published when a correction is learned by the adaptive vocab.
+
+    Attributes:
+        wrong: The original (wrong) text that was corrected.
+        right: The corrected text.
+        promoted: True if the correction crossed the promote_threshold.
+    """
+
+    wrong: str
+    right: str
+    promoted: bool = False
+
+
+@dataclass
 class TimingEvent:
     """Published when a pipeline stage completes with timing data.
 

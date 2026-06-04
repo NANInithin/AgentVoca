@@ -23,6 +23,18 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: dict[type, list[Callable[[Any], None]]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: "asyncio.AbstractEventLoop | None") -> None:
+        """Register a persistent event loop for async handlers.
+
+        When set, coroutine handlers published from a thread with no running
+        loop (e.g. the Qt thread or the audio callback) are scheduled on this
+        loop instead of being run in a throwaway ``asyncio.run()``. This keeps
+        any tasks they spawn alive. When publishing from within the loop, the
+        running loop is used directly.
+        """
+        self._loop = loop
 
     def subscribe(self, event_type: Type[T], handler: Callable[[T], None]) -> None:
         """Register a handler for the given event type.
@@ -59,11 +71,17 @@ class EventBus:
                     try:
                         loop = asyncio.get_running_loop()
                     except RuntimeError:
-                        # No running loop — run the coroutine synchronously
-                        asyncio.run(result)
-                    else:
-                        # A loop is running — schedule the coroutine
+                        loop = None
+                    if loop is not None:
+                        # Publishing from within a running loop — schedule there.
                         loop.create_task(result)
+                    elif self._loop is not None:
+                        # Publishing from another thread — hand off to the
+                        # persistent loop so spawned tasks survive.
+                        asyncio.run_coroutine_threadsafe(result, self._loop)
+                    else:
+                        # No loop available — run to completion synchronously.
+                        asyncio.run(result)
             except Exception:
                 logger.exception(
                     "Handler %s failed for event %s",

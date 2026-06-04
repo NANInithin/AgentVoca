@@ -17,6 +17,24 @@ class ASRProvider(ABC):
     as ``ASRError`` (or a subclass) defined in ``src.agentvoca.utils.errors``.
     """
 
+    # -- v2 additions (safe defaults) -----------------------------------
+
+    def supports_streaming(self) -> bool:
+        """Return True if stream_transcribe yields true interim partials.
+
+        Default False — the v1 buffer-and-finalize behavior.
+        """
+        return False
+
+    async def warm_up(self) -> None:
+        """Preload models / prime connections. Must not raise.
+
+        Default no-op for providers with no warm-up cost.
+        """
+        return None
+
+    # -- v1 abstract methods (unchanged) ---------------------------------
+
     @abstractmethod
     def get_name(self) -> str:
         """Return the registry key for this provider.
@@ -68,6 +86,9 @@ class ASRProvider(ABC):
         Providers that do not support streaming must implement this by
         buffering internally and yielding one final segment at the end.
         Must yield at least one segment with ``is_final=True`` before returning.
+
+        When ``supports_streaming()`` returns True, the provider **must**
+        yield ≥1 interim (``is_final=False``) segment before the final.
 
         Args:
             audio_stream: Async iterator of raw audio chunks.

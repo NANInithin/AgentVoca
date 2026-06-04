@@ -99,16 +99,26 @@ class VocabularyDictionary:
             ConfigError: If the vocab file path is given but cannot be read.
         """
         self._terms: list[str] = []
+        self._mappings: dict[str, str] = {}
 
         # Load from file if path is provided
         if path is not None:
-            self._terms.extend(_read_vocab_file(path))
+            self._load_from_file(path)
 
         # Add inline terms
         if terms is not None:
-            self._terms.extend(terms)
+            self.add_terms(terms)
 
         self._pattern = _build_pattern(self._terms)
+
+    def _load_from_file(self, path: str | Path) -> None:
+        lines = _read_vocab_file(path)
+        for line in lines:
+            if " -> " in line:
+                wrong, right = line.split(" -> ", 1)
+                self.add_mapping(wrong.strip(), right.strip())
+            else:
+                self.add_terms([line])
 
     @property
     def terms(self) -> list[str]:
@@ -120,15 +130,44 @@ class VocabularyDictionary:
         """True if no vocabulary terms are registered."""
         return len(self._terms) == 0
 
-    def _replacement(self, match: re.Match) -> str:
-        """Return the original vocabulary term casing for a matched word.
+    def add_terms(self, terms: list[str]) -> None:
+        """Add new terms to the dictionary and rebuild the matching pattern.
 
-        Looks up the matched text (case-insensitively) in the registered
-        terms list to find the stored casing. If not found, returns the
-        match unchanged.
+        Args:
+            terms: List of new vocabulary terms to add.
         """
+        if not terms:
+            return
+
+        changed = False
+        for term in terms:
+            if term not in self._terms:
+                self._terms.append(term)
+                changed = True
+
+        if changed:
+            self._pattern = _build_pattern(self._terms)
+
+    def add_mapping(self, wrong: str, right: str) -> None:
+        """Add a mapping from a misrecognized term to a correct term.
+
+        Args:
+            wrong: The misrecognized term (case-insensitive).
+            right: The correct term to replace it with.
+        """
+        self._mappings[wrong.lower()] = right
+        self.add_terms([wrong])
+
+    def _replacement(self, match: re.Match) -> str:
+        """Return the original vocabulary term or mapped term for a match."""
         matched = match.group(1)
         lower = matched.lower()
+
+        # Check explicit mappings first
+        if lower in self._mappings:
+            return self._mappings[lower]
+
+        # Fallback to casing-preserving lookup
         for term in self._terms:
             if term.lower() == lower:
                 return term

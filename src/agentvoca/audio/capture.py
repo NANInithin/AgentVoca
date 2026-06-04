@@ -15,6 +15,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
+from agentvoca.audio.chunker import AudioChunker
 from agentvoca.audio.devices import select_device
 from agentvoca.audio.vad import VAD
 from agentvoca.core.event_bus import EventBus
@@ -48,6 +49,8 @@ class AudioCapture:
         silence_timeout_ms: int = 900,
         max_duration_s: int = 120,
         frames_per_buffer: int = 1024,
+        chunker: Optional[AudioChunker] = None,
+        loop: Optional["asyncio.AbstractEventLoop"] = None,
     ) -> None:
         self._event_bus = event_bus
         self._sample_rate = sample_rate
@@ -57,6 +60,10 @@ class AudioCapture:
         self._silence_timeout_ms = silence_timeout_ms
         self._max_duration_s = max_duration_s
         self._frames_per_buffer = frames_per_buffer
+        self._chunker = chunker
+        # Persistent asyncio loop used to drive the (async) chunker lifecycle
+        # from this (Qt/audio) thread. None disables streaming chunking.
+        self._loop = loop
 
         self._stream: Optional[sd.InputStream] = None
         self._recording = False
@@ -121,6 +128,9 @@ class AudioCapture:
         self._stop_requested = False
         self._record_start_time = time.time()
         self._last_speech_time = time.time()
+        # v2: start the streaming chunker on the persistent loop.
+        if self._chunker is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(self._chunker.start)
         logger.debug("Recording started")
 
     def stop_recording(self) -> None:
@@ -129,6 +139,10 @@ class AudioCapture:
             return
         self._recording = False
         self._stop_requested = True
+
+        # v2: flush + stop the streaming chunker (emits the final flush chunk).
+        if self._chunker is not None and self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=True), self._loop)
 
         duration_ms = int((time.time() - self._record_start_time) * 1000)
         audio_bytes = b"".join(self._audio_buffer) if self._audio_buffer else b""
@@ -147,6 +161,9 @@ class AudioCapture:
         self._recording = False
         self._stop_requested = True
         self._audio_buffer = []
+        # v2: stop the chunker WITHOUT flushing so no final segment is produced.
+        if self._chunker is not None and self._loop is not None:
+            asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=False), self._loop)
         logger.debug("Recording cancelled")
 
     @property
@@ -174,6 +191,10 @@ class AudioCapture:
         timestamp_ms = int(time.time() * 1000)
 
         self._audio_buffer.append(audio_bytes)
+
+        # Feed audio to chunker for streaming ASR (v2)
+        if self._chunker is not None and self._chunker.is_running:
+            self._chunker.add_audio(audio_bytes)
 
         # VAD-based silence detection for auto-stop
         if self._vad is not None and self._vad.is_available:

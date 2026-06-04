@@ -18,6 +18,21 @@ class CleanupProvider(ABC):
     as ``CleanupError`` (or a subclass) defined in ``src.agentvoca.utils.errors``.
     """
 
+    # -- v2 additions (safe defaults) -----------------------------------
+
+    def supports_streaming(self) -> bool:
+        """Return True if the provider can clean partial segments coherently.
+
+        Default False.
+        """
+        return False
+
+    async def warm_up(self) -> None:
+        """Prime connection pool / load local model. Must not raise. Default no-op."""
+        return None
+
+    # -- v1 abstract methods (unchanged) ---------------------------------
+
     @abstractmethod
     def get_name(self) -> str:
         """Return the registry key for this provider.

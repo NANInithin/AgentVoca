@@ -44,6 +44,12 @@ class RulesCleanupProvider(CleanupProvider):
         # Compile tech patterns
         self._tech_res = {name: re.compile(pattern) for name, pattern in TECH_PATTERNS.items()}
 
+    # ── v2: warm-up (trivial — no external dependencies) ─────────────
+
+    async def warm_up(self) -> None:
+        """No-op: rules-based cleanup has no model to load or pool to prime."""
+        return None
+
     def get_name(self) -> str:
         """Return the registry key for this provider."""
         return "rules"

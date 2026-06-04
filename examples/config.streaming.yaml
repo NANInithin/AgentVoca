@@ -1,0 +1,76 @@
+# AgentVoca v2 — streaming + smart-context example
+#
+# Live partial transcripts while you speak, per-app cleanup style, voice
+# commands, and adaptive vocabulary. Fully local, no API key.
+# Copy to ~/.agentvoca/config.yaml and edit.
+#
+# GPU note: if you see "CUDA inference probe failed" at startup, add:
+#   asr.extra.device: cpu
+# or install CUDA Toolkit 12.x for proper GPU acceleration.
+#
+# See docs/performance.md and docs/context-and-commands.md.
+
+app:
+  profile: standard
+  language: auto
+  mode: toggle
+
+audio:
+  sample_rate: 16000
+  vad_enabled: true
+  silence_timeout_ms: 900
+
+asr:
+  provider: faster_whisper
+  model: base               # accurate final pass (what actually gets inserted)
+                            # swap for large-v3 for higher accuracy (needs ~3 GB RAM)
+  streaming: true           # show live partial transcripts in the overlay
+  streaming_model: base     # fast model for the live preview only
+  streaming_chunk_ms: 500   # emit a delta chunk every 500 ms
+  streaming_window_s: 8     # rolling window used for partials (seconds)
+  warm_up: true             # preload at startup → no first-dictation penalty
+
+  # Uncomment to force CPU mode (skips CUDA probe, faster startup if no GPU):
+  # extra:
+  #   device: cpu
+
+cleanup:
+  provider: rules           # deterministic, offline, no API key
+  style: standard
+  warm_up: true
+
+insertion:
+  strategy: keyboard
+  clipboard_fallback: true
+
+hotkeys:
+  toggle_recording: ctrl+space
+  cancel: escape
+  # ctrl+shift+z is recommended on Windows.
+  # Avoid ctrl+alt+z — NVIDIA drivers capture it on most machines.
+  undo: ctrl+shift+z
+
+# Pick a cleanup style based on the active app. Glob patterns; "*" is fallback.
+# Windows: use the .exe name.  macOS: use the app name (no .exe).
+context:
+  enabled: true
+  read_screen: false        # privacy: off by default
+  read_clipboard: false
+  profiles:
+    "Code.exe": technical   # VS Code on Windows
+    "Code": technical       # VS Code on macOS
+    "*terminal*": technical
+    "*Terminal*": technical
+    "*": standard
+
+# Voice editing commands.
+commands:
+  enabled: true
+
+# Learn corrections and auto-apply them after promote_threshold repeats.
+# To record a correction: dictate → undo (ctrl+shift+z) → re-dictate.
+# Repeat the same pair twice (threshold=2) to lock it in permanently.
+adaptive:
+  enabled: true
+  promote_threshold: 2
+  learned_vocab_path: ~/.agentvoca/learned_vocab.txt

@@ -4,6 +4,7 @@ Sends transcripts to any OpenAI-compatible /v1/chat/completions endpoint
 using a style-specific system prompt.
 """
 
+import logging
 import os
 from typing import Optional
 
@@ -14,6 +15,8 @@ from agentvoca.cleanup.prompts import get_cleanup_prompt
 from agentvoca.config.schema import CleanupConfig
 from agentvoca.core.types import CleanupContext
 from agentvoca.utils.errors import CleanupError
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleCleanupProvider(CleanupProvider):
@@ -33,6 +36,28 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
         self._api_key = None
         if config.api_key_env:
             self._api_key = os.environ.get(config.api_key_env)
+
+    # ── v2: warm-up ──────────────────────────────────────────────────
+
+    async def warm_up(self) -> None:
+        """Prime the HTTP connection pool with a lightweight health check.
+
+        Sends a minimal model-list request to the endpoint to warm the
+        connection pool and verify reachability. Must not raise.
+        """
+        if not self.is_available():
+            logger.debug("OpenAICompatibleCleanupProvider warm-up skipped (not available)")
+            return
+        try:
+            headers = {}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                url = f"{self._endpoint.rstrip('/')}/models"
+                await client.get(url, headers=headers)
+            logger.debug("OpenAICompatibleCleanupProvider warm-up complete")
+        except Exception:
+            logger.debug("OpenAICompatibleCleanupProvider warm-up failed (non-fatal)")
 
     def get_name(self) -> str:
         """Return the registry key for this provider."""

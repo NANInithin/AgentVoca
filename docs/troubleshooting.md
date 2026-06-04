@@ -69,6 +69,15 @@ run with VAD disabled (always-on recording until manual stop).
 - Common conflicts: `ctrl+space` is used by macOS Spotlight and some IDE configurations.
 - After changing hotkeys, restart the app.
 
+**`ctrl+alt+z` undo not working on Windows:**
+NVIDIA drivers silently capture `ctrl+alt+z` (ShadowPlay overlay toggle) before any
+other app sees it. Use `ctrl+shift+z` for the undo hotkey instead:
+
+```yaml
+hotkeys:
+  undo: ctrl+shift+z
+```
+
 ---
 
 ## Insertion failures
@@ -133,6 +142,65 @@ Logs are written to stdout. Redirect to a file for easier review:
 ```bash
 uv run agentvoca --debug 2>&1 | tee agentvoca.log
 ```
+
+---
+
+## CUDA inference fails on Windows (`cublas64_12.dll not found`)
+
+**Symptom:** Log shows `CUDA inference probe failed — switching to CPU` on every startup.
+
+The model loads on GPU (memory allocation works), but CUDA matrix operations need
+`cublas64_12.dll` which Windows cannot find even if `nvidia-cublas-cu12` is pip-installed.
+
+**Quick fix — force CPU mode:**
+
+```yaml
+asr:
+  extra:
+    device: cpu
+```
+
+This skips the GPU probe and starts faster with no warning.
+
+**Proper GPU fix — install CUDA Toolkit 12.x:**
+
+Download and install [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-toolkit) from
+NVIDIA. The installer places `cublas64_12.dll` on the system `PATH` where Windows finds it
+automatically. Remove the `device: cpu` override afterwards.
+
+---
+
+## Streaming: same text repeated / very long transcription after stop
+
+**Symptom:** After stopping recording, transcription takes minutes and inserts repeated lines.
+
+This was a bug (fixed in v2.1) where the AudioChunker sent the rolling *window* with each
+chunk rather than the *delta*. If you are seeing this, ensure you have the latest version.
+
+---
+
+## Undo does not remove text from the target app
+
+**Symptom:** Pressing the undo hotkey is logged (`Hotkey triggered: undo`) but the text
+in the editor is not removed.
+
+The undo targets the window that received the insertion. Keep that window focused or
+do not switch away before pressing undo — the app re-focuses it automatically before
+sending the backspace keystrokes.
+
+---
+
+## Adaptive vocabulary: no correction recorded
+
+**Symptom:** After undo + re-dictate, no `Adaptive: recording correction` log appears.
+
+The correction window is **30 seconds** from the undo hotkey press to the pipeline
+finishing the second dictation. With streaming + CPU this can take 10–15 s. If you
+speak too slowly or wait too long, the window expires. Speak the correction immediately
+after pressing undo.
+
+Also: the mis-heard and corrected texts must differ (case-insensitive). If Whisper
+keeps producing the same text, the correction is not recorded.
 
 ---
 

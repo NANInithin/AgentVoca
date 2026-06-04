@@ -60,19 +60,28 @@ def _make_icon(r: int, g: int, b: int, size: int = 16) -> QtGui.QIcon:
     return QtGui.QIcon(pixmap)
 
 
-class TrayApp:
+class TrayApp(QtCore.QObject):
     """System tray icon with state-aware visual feedback.
+
+    Subclasses ``QObject`` so it can use signals to marshal updates from
+    worker threads (the persistent asyncio loop, the audio callback) onto the
+    GUI thread — Qt widgets must only be touched there.
 
     Args:
         event_bus: Shared event bus to subscribe to state changes.
         parent: Optional parent QWidget.
     """
 
+    # Signals marshal updates onto the GUI thread.
+    _state_sig = QtCore.Signal(str)
+    _message_sig = QtCore.Signal(str, str, int)
+
     def __init__(
         self,
         event_bus: EventBus,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
+        super().__init__()
         self._event_bus = event_bus
         self._parent = parent
 
@@ -90,7 +99,11 @@ class TrayApp:
         self._quit_action = self._menu.addAction("Quit")
         self._tray.setContextMenu(self._menu)
 
-        # Subscribe to state changes
+        # Connect thread-marshalling signals to GUI-thread slots.
+        self._state_sig.connect(self._apply_state)
+        self._message_sig.connect(self._apply_message)
+
+        # Subscribe to state changes (handler may run on a worker thread)
         self._event_bus.subscribe(StateChangedEvent, self._on_state_changed)
 
         # Show the tray icon
@@ -103,9 +116,11 @@ class TrayApp:
         self._tray.setIcon(icon)
 
     def _on_state_changed(self, event: object) -> None:
-        """Handle a ``StateChangedEvent`` to update icon and tooltip."""
-        # event has .previous and .current attributes
-        current = getattr(event, "current", "idle")
+        """Emit the state change onto the GUI thread."""
+        self._state_sig.emit(getattr(event, "current", "idle"))
+
+    def _apply_state(self, current: str) -> None:
+        """Update icon and tooltip for the given state (GUI thread)."""
         tip = _TOOLTIPS.get(current, "agentvoca")
         self._tray.setToolTip(tip)
         self._status_action.setText(tip)
@@ -124,11 +139,17 @@ class TrayApp:
     def show_message(self, title: str, message: str, icon: int = 0) -> None:
         """Show a balloon notification from the tray.
 
+        Safe to call from any thread; the balloon is shown on the GUI thread.
+
         Args:
             title: Notification title.
             message: Notification body text.
             icon: ``QSystemTrayIcon.MessageIcon`` value (0=Info, 1=Warning, 2=Critical).
         """
+        self._message_sig.emit(title, message, icon)
+
+    def _apply_message(self, title: str, message: str, icon: int) -> None:
+        """Show a balloon notification (GUI thread)."""
         self._tray.showMessage(
             title,
             message,

@@ -16,10 +16,18 @@ audio:
 
 asr:
   provider: faster_whisper
-  model: large-v3
+  model: base               # base (~145 MB) — fast and offline.
+                            # Swap for large-v3 (~3 GB) for higher accuracy.
+
+  # GPU / CPU selection.
+  # By default the app tries CUDA first and falls back to CPU automatically.
+  # If you see "CUDA inference probe failed — switching to CPU" on every start,
+  # add the two lines below to skip the GPU attempt and start faster:
+  # extra:
+  #   device: cpu
 
 cleanup:
-  provider: rules
+  provider: rules           # deterministic, offline, no API key required
   style: standard
 
 insertion:
@@ -30,6 +38,9 @@ hotkeys:
   toggle_recording: ctrl+space
   open_settings: ctrl+alt+comma
   insert_last_transcript: ctrl+enter
+  # Undo the last inserted text. ctrl+shift+z is recommended on Windows.
+  # Avoid ctrl+alt+z — NVIDIA drivers capture it on most machines.
+  undo: ctrl+shift+z
   cancel: escape
 
 vocabulary:
@@ -37,3 +48,45 @@ vocabulary:
 
 snippets:
   path: ~/.agentvoca/snippets.yaml
+
+# ──────────────────────────────────────────────────────────────────────
+# v2 features (all optional — every block below defaults to v1 behavior).
+# Uncomment and edit to enable. See:
+#   docs/performance.md           — streaming & warm-up
+#   docs/context-and-commands.md  — context, commands, adaptive vocab
+# ──────────────────────────────────────────────────────────────────────
+
+# Live partial transcripts while you speak (streaming ASR).
+# On CPU (no CUDA), partials appear every ~1–3 s; on GPU every ~100–300 ms.
+# asr:
+#   provider: faster_whisper
+#   model: base              # accurate final pass (what actually gets inserted)
+#   streaming: true
+#   streaming_model: base    # fast model used only for the live preview
+#   streaming_chunk_ms: 500
+#   streaming_window_s: 8
+#   warm_up: true            # preload model at startup (default true)
+
+# Per-app cleanup style. Glob patterns; "*" is the fallback.
+# Windows: use the .exe name (e.g. "Code.exe").
+# macOS:   use the app name  (e.g. "Code").
+# context:
+#   enabled: true
+#   read_screen: false       # privacy: off by default, logged when used
+#   read_clipboard: false
+#   profiles:
+#     "Code.exe": technical
+#     "*terminal*": technical
+#     "*": standard
+
+# Voice editing commands ("new line", "new paragraph", "scratch that", ...).
+# commands:
+#   enabled: true
+
+# Learn corrections and auto-apply them after promote_threshold repeats.
+# Sequence: dictate → undo (ctrl+shift+z) → re-dictate correct word.
+# Do this twice (promote_threshold: 2) to lock in the mapping.
+# adaptive:
+#   enabled: true
+#   promote_threshold: 2
+#   learned_vocab_path: ~/.agentvoca/learned_vocab.txt

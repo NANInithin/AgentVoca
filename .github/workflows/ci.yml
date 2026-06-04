@@ -41,3 +41,14 @@ jobs:
 
       - name: Test with pytest
         run: xvfb-run uv run pytest tests/ -v --tb=short
+
+      - name: Benchmark latency budgets (mock pipeline)
+        run: uv run python scripts/benchmark.py --mode mock --json benchmark-report.json
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-py${{ matrix.python-version }}
+          path: benchmark-report.json
+          if-no-files-found: ignore

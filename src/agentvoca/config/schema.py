@@ -81,6 +81,31 @@ class ASRConfig(BaseModel):
     language_hint: Optional[str] = None
     extra: dict = Field(default_factory=dict)
 
+    # -- v2: streaming and warm-up (all optional, default to v1 behavior) --
+    streaming: bool = False
+    streaming_model: Optional[str] = None
+    streaming_chunk_ms: int = 500
+    streaming_window_s: int = 8
+    warm_up: bool = True
+
+    @field_validator("streaming_chunk_ms")
+    @classmethod
+    def _validate_streaming_chunk_ms(cls, value: int) -> int:
+        if value < 100 or value > 2000:
+            raise ConfigError(f"streaming_chunk_ms {value} outside [100, 2000].")
+        return value
+
+    @field_validator("streaming_model")
+    @classmethod
+    def _validate_streaming_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None:
+            valid_sizes = {"tiny", "base", "small", "medium", "large-v3"}
+            if value not in valid_sizes:
+                raise ConfigError(
+                    f"Unknown streaming_model '{value}'. Valid: {', '.join(sorted(valid_sizes))}."
+                )
+        return value
+
 
 class CleanupConfig(BaseModel):
     """Cleanup provider configuration."""
@@ -93,6 +118,10 @@ class CleanupConfig(BaseModel):
     preserve_code: bool = True
     custom_prompt_path: Optional[str] = None
     extra: dict = Field(default_factory=dict)
+
+    # -- v2: streaming cleanup and warm-up (optional, default to v1 behavior) --
+    streaming: bool = False
+    warm_up: bool = True
 
     @field_validator("custom_prompt_path")
     @classmethod
@@ -145,6 +174,37 @@ class SnippetsConfig(BaseModel):
     path: Optional[str] = None  # path to snippets.yaml
 
 
+class ContextConfig(BaseModel):
+    """Context engine configuration (v2)."""
+
+    enabled: bool = False
+    read_screen: bool = False
+    read_clipboard: bool = False
+    profiles: dict[str, str] = Field(default_factory=dict)
+
+
+class CommandsConfig(BaseModel):
+    """Voice commands configuration (v2)."""
+
+    enabled: bool = False
+    phrases: dict[str, str] = Field(default_factory=dict)
+
+
+class AdaptiveConfig(BaseModel):
+    """Adaptive vocabulary configuration (v2)."""
+
+    enabled: bool = False
+    promote_threshold: int = 3
+    learned_vocab_path: Optional[str] = None
+
+    @field_validator("promote_threshold")
+    @classmethod
+    def _validate_promote_threshold(cls, value: int) -> int:
+        if value < 2:
+            raise ConfigError("adaptive.promote_threshold must be >= 2.")
+        return value
+
+
 class FullConfig(BaseModel):
     """Top-level configuration model combining all sections."""
 
@@ -157,13 +217,17 @@ class FullConfig(BaseModel):
     vocabulary: VocabularyConfig = Field(default_factory=VocabularyConfig)
     snippets: SnippetsConfig = Field(default_factory=SnippetsConfig)
 
+    # -- v2: new config blocks (all optional with v1-equivalent defaults) --
+    context: ContextConfig = Field(default_factory=ContextConfig)
+    commands: CommandsConfig = Field(default_factory=CommandsConfig)
+    adaptive: AdaptiveConfig = Field(default_factory=AdaptiveConfig)
+
     @model_validator(mode="after")
     def _validate_api_key_env(self) -> "FullConfig":
         """Check that api_key_env vars are set when a provider is remote.
 
         A provider is considered 'remote' when ``endpoint`` is set.
         """
-        # ASR
         if self.asr.endpoint is not None and self.asr.api_key_env is not None:
             if self.asr.api_key_env not in os.environ:
                 raise ConfigError(
@@ -171,7 +235,6 @@ class FullConfig(BaseModel):
                     f"Set env var '{self.asr.api_key_env}'."
                 )
 
-        # Cleanup
         if self.cleanup.endpoint is not None and self.cleanup.api_key_env is not None:
             if self.cleanup.api_key_env not in os.environ:
                 raise ConfigError(

@@ -123,6 +123,7 @@ class SettingsWindow(QtWidgets.QWidget):
             "Insert Last",
             self._config.hotkeys.insert_last_transcript or "(not set)",
         )
+        add_field("Undo Last Insertion", self._config.hotkeys.undo or "(not set)")
         add_field("Cancel", self._config.hotkeys.cancel)
 
         container.setLayout(form)

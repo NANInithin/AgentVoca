@@ -11,12 +11,20 @@ result inserted directly at the cursor in the active application.
 
 - **Model-agnostic** — swap ASR or LLM providers with a one-line config change
 - **Local-first** — runs entirely offline with faster-whisper; no data leaves the machine
+- **Live streaming transcription** — partial text appears in the overlay as you speak _(v2)_
+- **Context-aware formatting** — pick a cleanup style based on the active app _(v2)_
+- **Voice commands** — "new paragraph", "scratch that", and friends _(v2)_
+- **Adaptive vocabulary** — the app learns your corrections and applies them automatically _(v2)_
 - **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are never mangled by the LLM
 - **Vocabulary substitution** — teach the app correct casing for your domain terms
 - **Snippet expansion** — expand short triggers into full phrases
 - **Push-to-talk, toggle, and VAD auto-stop** recording modes
 - **Keyboard or clipboard insertion** with automatic fallback
 - **System tray** integration with overlay indicator
+
+> **v2 features are opt-in.** Each is an independent config flag that defaults to
+> off, so an existing v1 `config.yaml` keeps working unchanged. See
+> [What's new in v2](#whats-new-in-v2).
 
 ---
 
@@ -275,11 +283,94 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on adding new providers.
 
 ---
 
+## What's new in v2
+
+v2 is a latency-and-intelligence layer on top of the v1 pipeline. Everything is
+additive and opt-in; the v1 batch path remains the always-available fallback.
+
+### Live streaming transcription
+
+Turn on `asr.streaming` to see partial text in the overlay as you talk — dim and
+italic to make clear it is a preview. The accurate model still produces the final
+inserted text on stop.
+
+```yaml
+asr:
+  provider: faster_whisper
+  model: base               # accurate final pass (inserted text)
+  streaming: true
+  streaming_model: base     # fast model for the live preview only
+  warm_up: true             # preloads models at startup (default)
+```
+
+**GPU note:** if you see `CUDA inference probe failed — switching to CPU` at startup,
+your machine cannot run ctranslate2 CUDA inference. Add `extra: {device: cpu}` to skip
+the GPU attempt and start faster:
+
+```yaml
+asr:
+  provider: faster_whisper
+  model: base
+  extra:
+    device: cpu
+```
+
+For proper GPU acceleration, install the [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-toolkit).
+
+### Undo last insertion
+
+Press the configured `hotkeys.undo` key (default `ctrl+shift+z`) after a dictation to
+remove the inserted text. The app re-focuses the window where text was inserted and
+removes exactly the characters it typed — no clipboard needed, works even if you have
+switched focus to the terminal to watch logs.
+
+> **Note:** `ctrl+alt+z` is captured by NVIDIA drivers on most systems. Use `ctrl+shift+z`
+> or a function-key combination instead.
+
+### Context, commands & adaptive vocabulary
+
+```yaml
+context:                   # per-app cleanup style (glob patterns, "*" = fallback)
+  enabled: true
+  profiles:
+    "Code.exe": technical   # Windows: use exe name
+    "Code": technical       # macOS: use app name
+    "*": standard
+
+commands:                  # "new line", "new paragraph", "scratch that", ...
+  enabled: true
+
+adaptive:                  # learn corrections, auto-apply after promote_threshold repeats
+  enabled: true
+  promote_threshold: 2      # correct the same mis-recognition twice to lock it in
+```
+
+**Adaptive vocab timing:** with streaming + CPU the correction window is 30 seconds
+(undo hotkey → speak the correction → pipeline finishes). You need to complete the
+undo + re-dictation within that window.
+
+A complete example lives in [examples/config.streaming.yaml](examples/config.streaming.yaml).
+Full details: [docs/context-and-commands.md](docs/context-and-commands.md) and
+[docs/performance.md](docs/performance.md).
+
+### Benchmarking
+
+A pipeline latency harness ships in `scripts/benchmark.py`:
+
+```bash
+uv run python scripts/benchmark.py --mode mock   # CI-gated orchestration budgets
+uv run python scripts/benchmark.py --mode real   # real local models over WAV fixtures
+```
+
+---
+
 ## Documentation
 
 | Document | Description |
 |---|---|
 | [docs/config-reference.md](docs/config-reference.md) | Every config key, type, default, and constraint |
+| [docs/performance.md](docs/performance.md) | Latency budgets, streaming/warm-up tuning, benchmark harness |
+| [docs/context-and-commands.md](docs/context-and-commands.md) | Context profiles, voice commands, adaptive vocab, privacy |
 | [docs/providers.md](docs/providers.md) | How to implement and register a new provider |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |
 

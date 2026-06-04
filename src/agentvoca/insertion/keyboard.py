@@ -16,7 +16,7 @@ from agentvoca.config.schema import InsertionConfig
 from agentvoca.core.types import InsertionResult
 from agentvoca.insertion.base import InsertionStrategy
 from agentvoca.insertion.platform.macos import is_macos
-from agentvoca.insertion.platform.windows import is_windows
+from agentvoca.insertion.platform.windows import focus_window, get_foreground_hwnd, is_windows
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,10 @@ class KeyboardInsertionStrategy(InsertionStrategy):
     def __init__(self, config: InsertionConfig) -> None:
         self._config = config
         self._last_text: Optional[str] = None
+        # Win32 handle of the window that received the last insertion.
+        # Saved so undo_last() can refocus the correct window even if the
+        # user switched focus before pressing the undo hotkey.
+        self._last_hwnd: int = 0
 
         # PyAutoGUI safety settings
         pyautogui.FAILSAFE = True
@@ -65,6 +69,10 @@ class KeyboardInsertionStrategy(InsertionStrategy):
         if not text:
             return InsertionResult(success=True, method_used="keyboard")
 
+        # Save the focused window NOW before any key events are sent.
+        # undo_last() needs this handle to refocus the correct window.
+        self._last_hwnd = get_foreground_hwnd()
+
         # pyautogui.typewrite() only handles ASCII keystrokes and silently drops
         # newlines. Use clipboard paste for non-ASCII or multi-line text so that
         # formatted output (numbered lists, paragraphs) arrives intact.
@@ -92,18 +100,43 @@ class KeyboardInsertionStrategy(InsertionStrategy):
             )
 
     async def undo_last(self) -> bool:
-        """Attempt to undo the last insertion by sending Ctrl+Z / Cmd+Z.
+        """Remove the last inserted text.
 
-        Returns:
-            True if the undo was sent.
+        Strategy (in order):
+        1. Refocus the window that received the insertion (using its saved
+           Win32 handle) so the keystrokes go to the right place even if
+           the user switched focus after dictating.
+        2. Send Backspace × len(last_text) to remove exactly what was typed.
+           This is more reliable than Ctrl+Z because it does not depend on
+           the target app's undo stack or undo support.
+        3. Fall back to Ctrl+Z when the inserted text length is unknown
+           (e.g. clipboard path or non-ASCII text).
         """
+        count = len(self._last_text) if self._last_text else 0
+        hwnd = self._last_hwnd
+        loop = asyncio.get_running_loop()
+
         try:
-            modifier = "command" if is_macos() else "ctrl"
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: pyautogui.hotkey(modifier, "z"),
-            )
-            logger.debug("Sent undo hotkey")
+            # Step 1: refocus the insertion window on Windows.
+            if hwnd and is_windows():
+                await loop.run_in_executor(None, lambda: focus_window(hwnd))
+                # Brief pause so the window activation settles before we type.
+                await asyncio.sleep(0.08)
+
+            # Step 2: remove the text.
+            if count > 0:
+                await loop.run_in_executor(
+                    None,
+                    lambda: pyautogui.press("backspace", presses=count, interval=0.0, _pause=False),
+                )
+                logger.debug("Undid %d chars via backspace", count)
+                self._last_text = None
+            else:
+                # Fallback: Ctrl+Z / Cmd+Z for clipboard-inserted text.
+                modifier = "command" if is_macos() else "ctrl"
+                await loop.run_in_executor(None, lambda: pyautogui.hotkey(modifier, "z"))
+                logger.debug("Sent undo hotkey (fallback — text length unknown)")
+
             return True
         except Exception as exc:
             logger.warning("Undo failed: %s", exc)

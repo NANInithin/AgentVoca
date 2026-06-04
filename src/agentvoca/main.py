@@ -8,7 +8,6 @@ Run with::
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -21,8 +20,10 @@ from agentvoca.app.settings import SettingsWindow
 from agentvoca.app.tray import TrayApp
 from agentvoca.asr import BUILTIN_ASR_PROVIDERS
 from agentvoca.audio.capture import AudioCapture
+from agentvoca.audio.chunker import AudioChunker
 from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
 from agentvoca.config.loader import load_config
+from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
 from agentvoca.core.events import ErrorEvent, HotkeyEvent
 from agentvoca.core.orchestrator import Orchestrator
@@ -117,6 +118,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Core objects ─────────────────────────────────────────────────
     event_bus = EventBus()
+
+    # Persistent asyncio loop on a background thread. The Qt main loop owns
+    # this thread; all pipeline coroutines and their spawned tasks (warm-up,
+    # streaming, voice-command inserts, error timer) run here so they are not
+    # cancelled by a throwaway asyncio.run().
+    loop_thread = AsyncLoopThread()
+    loop_thread.start()
+    event_bus.set_loop(loop_thread.loop)
+
     registry = _build_registry()
     orchestrator = Orchestrator(config=config, registry=registry, event_bus=event_bus)
 
@@ -150,6 +160,22 @@ def main(argv: list[str] | None = None) -> int:
     event_bus.subscribe(ErrorEvent, on_error)
 
     # ── Audio capture ─────────────────────────────────────────────────
+    # Build the streaming chunker only when streaming is enabled; otherwise
+    # the v1 batch path is used unchanged.
+    chunker: AudioChunker | None = None
+    if config.asr.streaming:
+        chunker = AudioChunker(
+            event_bus=event_bus,
+            chunk_ms=config.asr.streaming_chunk_ms,
+            window_s=config.asr.streaming_window_s,
+            sample_rate=config.audio.sample_rate,
+        )
+        logger.info(
+            "Streaming enabled (chunk_ms=%d, window_s=%d)",
+            config.asr.streaming_chunk_ms,
+            config.asr.streaming_window_s,
+        )
+
     audio = AudioCapture(
         event_bus=event_bus,
         sample_rate=config.audio.sample_rate,
@@ -157,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         device_name=config.audio.input_device,
         silence_timeout_ms=config.audio.silence_timeout_ms,
         max_duration_s=config.audio.max_recording_duration_s,
+        chunker=chunker,
+        loop=loop_thread.loop,
     )
     try:
         audio.start()
@@ -166,15 +194,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # ── Orchestrator startup ──────────────────────────────────────────
-    # asyncio.run() creates its own event loop, runs the coroutine to
-    # completion, then closes it. Subscriptions made inside start() are
-    # synchronous and persist after the loop closes.
+    # Run start() on the persistent loop and block until it returns. The
+    # background warm-up task it spawns keeps running on that loop afterwards.
     try:
-        asyncio.run(orchestrator.start())
+        loop_thread.submit(orchestrator.start()).result()
         logger.info("Orchestrator ready")
     except AgentVocaError as exc:
         logger.critical("Failed to start orchestrator: %s", exc)
         audio.stop()
+        loop_thread.stop()
         return 1
 
     # ── Hotkeys ───────────────────────────────────────────────────────
@@ -197,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                 audio.stop_recording()
             else:
                 logger.debug("Starting recording")
+                # Reset any leftover streaming state before the new dictation.
+                loop_thread.call_soon(orchestrator.prepare_for_recording)
                 audio.start_recording()
                 # Notify the overlay immediately so it appears during recording,
                 # not only after the pipeline starts (which happens post-stop).
@@ -208,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         elif action == "open_settings":
             open_settings()
         elif action == "undo":
-            asyncio.run(orchestrator.undo_last_insertion())
+            loop_thread.submit(orchestrator.undo_last_insertion())
 
     event_bus.subscribe(HotkeyEvent, on_hotkey)
     hotkeys.start()
@@ -224,8 +254,12 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Shutting down…")
         hotkeys.stop()
         audio.stop()
-        asyncio.run(orchestrator.stop())
+        try:
+            loop_thread.submit(orchestrator.stop()).result(timeout=3.0)
+        except Exception:
+            logger.debug("Orchestrator stop did not complete cleanly", exc_info=True)
         overlay.stop()
+        loop_thread.stop()
         logger.info("Shutdown complete")
 
     return exit_code

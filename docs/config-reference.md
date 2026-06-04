@@ -41,6 +41,9 @@ reference an environment variable by name — the app reads the variable at runt
 - If `asr.endpoint` is set and `asr.api_key_env` is set, the named env var must be
   present at startup.
 - If `cleanup.endpoint` is set and `cleanup.api_key_env` is set, same requirement.
+- `asr.streaming_chunk_ms` must be in `[100, 2000]`. _(v2)_
+- `asr.streaming_model`, if set, must be one of `tiny`, `base`, `small`, `medium`, `large-v3`. _(v2)_
+- `adaptive.promote_threshold` must be `>= 2`. _(v2)_
 
 ---
 
@@ -83,7 +86,12 @@ Controls the speech-to-text provider.
 | `endpoint` | string | `null` | Remote API base URL (e.g. `https://api.openai.com/v1`). Required for `openai_compatible`. |
 | `api_key_env` | string | `null` | Name of the env var holding the API key (not the key itself). |
 | `language_hint` | string | `null` | ISO-639-1 language code (e.g. `en`, `de`). Overrides `app.language`. |
-| `extra` | object | `{}` | Provider-specific extra options. |
+| `extra` | object | `{}` | Provider-specific extra options (e.g. `device`, `compute_type`, `beam_size`). |
+| `streaming` | bool | `false` | _(v2)_ Emit live partial transcripts while recording. |
+| `streaming_model` | string | `null` | _(v2)_ Fast model for the live preview only. One of: `tiny`, `base`, `small`, `medium`, `large-v3`. |
+| `streaming_chunk_ms` | int | `500` | _(v2)_ Interval between partials, in `[100, 2000]`. |
+| `streaming_window_s` | int | `8` | _(v2)_ Rolling window (seconds) re-transcribed per partial. `0` = cumulative. |
+| `warm_up` | bool | `true` | _(v2)_ Preload the model at startup so the first dictation has no cold-start penalty. |
 
 ### faster_whisper notes
 
@@ -113,6 +121,8 @@ Controls transcript post-processing.
 | `preserve_code` | bool | `true` | If true, includes technical text preservation guardrails in the LLM system prompt. |
 | `custom_prompt_path` | string | `null` | Path to a plain-text file to use as the full system prompt. Overrides `style`. |
 | `extra` | object | `{}` | Provider-specific extra options. |
+| `streaming` | bool | `false` | _(v2)_ Clean finalized segments incrementally. Auto-disabled for `technical` style to protect code. |
+| `warm_up` | bool | `true` | _(v2)_ Prime the connection pool / load a local LLM at startup. |
 
 ### Style modes
 
@@ -199,7 +209,48 @@ Matching is case-insensitive and whole-word only.
 
 ---
 
+## context _(v2)_
+
+Per-app cleanup style selection. Off by default. See
+[context-and-commands.md](context-and-commands.md).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable the context engine. |
+| `read_screen` | bool | `false` | Read screen content for context. Privacy-sensitive; logged each use. |
+| `read_clipboard` | bool | `false` | Read clipboard content for context. Privacy-sensitive; logged each use. |
+| `profiles` | object | `{}` | Map of app-name glob → style. Key `"*"` is the fallback. Values must be valid styles. |
+
+---
+
+## commands _(v2)_
+
+Voice editing commands. Off by default.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable voice command recognition. |
+| `phrases` | object | `{}` | Override/extend phrase → action. Actions: `newline`, `paragraph`, `delete_last`, `undo`, `capitalize`. |
+
+Built-in phrases: `new line`, `new paragraph`, `scratch that`, `undo that`,
+`capitalize that`.
+
+---
+
+## adaptive _(v2)_
+
+Learn corrections and auto-apply them. Off by default.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable adaptive vocabulary learning. |
+| `promote_threshold` | int | `3` | Corrections before a mapping is promoted to vocabulary. Must be `>= 2`. |
+| `learned_vocab_path` | string | `null` | Where promotions persist. Defaults to `~/.agentvoca/learned_vocab.txt`. |
+
+---
+
 ## Full example
 
 See [config.example.yaml](../config.example.yaml) and the per-provider examples in
-[examples/](../examples/).
+[examples/](../examples/), including [config.streaming.yaml](../examples/config.streaming.yaml)
+for the full v2 feature set.

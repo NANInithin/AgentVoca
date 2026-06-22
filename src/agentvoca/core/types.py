@@ -61,6 +61,41 @@ class CleanupContext:
 
 
 @dataclass
+class VisionContext:
+    """Context passed to a vision (VLM) provider for image extraction.
+
+    Attributes:
+        instruction: The spoken dictation text, used as the extraction
+            instruction so the model infers the desired output format
+            (e.g., "make a table of the expenses" → a markdown table).
+        preserve_code: If True, the model must preserve code identifiers,
+            paths, URLs, and numeric values exactly.
+        app_name: Name of the currently active application, for context only.
+        output_format: Optional explicit format hint ("markdown", "plain",
+            or "auto"). When "auto" (default) the model infers from the
+            instruction.
+    """
+
+    instruction: str = ""
+    preserve_code: bool = True
+    app_name: Optional[str] = None
+    output_format: str = "auto"
+
+
+@dataclass
+class Screenshot:
+    """A captured screenshot awaiting vision extraction.
+
+    Attributes:
+        data: Encoded image bytes (PNG).
+        mime_type: MIME type of the image data.
+    """
+
+    data: bytes
+    mime_type: str = "image/png"
+
+
+@dataclass
 class InsertionResult:
     """Result of a text insertion attempt.
 

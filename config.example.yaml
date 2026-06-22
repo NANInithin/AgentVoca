@@ -90,3 +90,27 @@ snippets:
 #   enabled: true
 #   promote_threshold: 2
 #   learned_vocab_path: ~/.agentvoca/learned_vocab.txt
+
+# ──────────────────────────────────────────────────────────────────────
+# v3 feature — screenshot-to-text (vision). Opt-in, off by default.
+#
+# While recording, press hotkeys.capture_screenshot to snip a region with
+# your OS tool (Windows Snip & Sketch / macOS screenshot). A vision model
+# turns it into markdown/text and splices it into your dictation at spoken
+# anchor phrases ("the attached screenshot", "as shown", ...) — or appends it
+# at the end. Multiple snips map to multiple anchors in order.
+#
+# This is API-based: screenshots are sent to the configured endpoint. Requires
+# a vision-capable model and an API key. See docs/vision.md.
+# ──────────────────────────────────────────────────────────────────────
+# vision:
+#   enabled: true
+#   endpoint: https://openrouter.ai/api/v1   # any OpenAI-compatible vision endpoint
+#   api_key_env: OPENROUTER_API_KEY          # name of the env var holding your key
+#   model: openai/gpt-4o-mini                # or anthropic/claude-..., google/gemini-...
+#   output_format: auto                      # auto | markdown | plain
+#   capture_timeout_s: 30                    # how long to wait while you snip
+#   # anchor_phrases: ["the attached screenshot", "as shown"]   # optional override
+#
+# hotkeys:
+#   capture_screenshot: ctrl+shift+s

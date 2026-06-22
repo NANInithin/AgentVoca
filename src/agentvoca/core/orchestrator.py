@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 from agentvoca.asr.base import ASRProvider
 from agentvoca.cleanup.base import CleanupProvider
@@ -40,18 +40,34 @@ from agentvoca.core.events import (
     StateChangedEvent,
     TimingEvent,
     TranscriptEvent,
+    VisionExtractedEvent,
     WarmupCompleteEvent,
 )
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.core.state_machine import StateMachine
-from agentvoca.core.types import AppState, CleanupContext, InsertionResult, TranscriptSegment
+from agentvoca.core.types import (
+    AppState,
+    CleanupContext,
+    InsertionResult,
+    TranscriptSegment,
+    VisionContext,
+)
 from agentvoca.insertion.base import InsertionStrategy
-from agentvoca.utils.errors import ASRError, CleanupError
+from agentvoca.utils.errors import ASRError, CleanupError, VisionError
+from agentvoca.vision.anchors import AnchorSplicer
 from agentvoca.vocab.adaptive import AdaptiveStore
 from agentvoca.vocab.dictionary import VocabularyDictionary
 from agentvoca.vocab.snippets import SnippetExpander
 
+if TYPE_CHECKING:
+    from agentvoca.capture.screenshot import ScreenshotCapturer
+    from agentvoca.vision.base import VisionProvider
+
 logger = logging.getLogger(__name__)
+
+# How long the pipeline waits for an in-flight screenshot snip to finish
+# before draining captures (the user may still be dragging a selection).
+_VISION_CAPTURE_GRACE_S = 2.0
 
 # ── Retry Policy (§6.3) ─────────────────────────────────────────────
 
@@ -81,10 +97,12 @@ class Orchestrator:
         config: FullConfig,
         registry: ProviderRegistry,
         event_bus: EventBus,
+        screenshot_capturer: Optional["ScreenshotCapturer"] = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._event_bus = event_bus
+        self._screenshot_capturer = screenshot_capturer
 
         self._state_machine = StateMachine()
         self._last_transcript: Optional[str] = None
@@ -134,6 +152,11 @@ class Orchestrator:
         self._resolved_style: Optional[str] = None
         self._resolved_app_name: Optional[str] = None
         self._resolved_language: Optional[str] = None
+
+        # ── v3 vision (screenshot-to-text) state ────────────────────
+        self._vision_enabled: bool = False
+        self._vision_provider: Optional["VisionProvider"] = None
+        self._anchor_splicer: Optional[AnchorSplicer] = None
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -198,17 +221,34 @@ class Orchestrator:
                     "Context engine enabled but app detection not available on this platform"
                 )
 
+        # v3: Initialize vision (screenshot-to-text)
+        self._vision_enabled = self._config.vision.enabled
+        if self._vision_enabled:
+            self._vision_provider = self._registry.get_vision(self._config.vision)
+            self._anchor_splicer = AnchorSplicer(self._config.vision.anchor_phrases)
+            if not self._vision_provider.is_available():
+                logger.warning(
+                    "Vision provider '%s' reports unavailable at startup",
+                    self._vision_provider.get_name(),
+                )
+            if self._screenshot_capturer is None or not self._screenshot_capturer.is_available():
+                logger.warning(
+                    "Vision enabled but screenshot capture is unavailable on this platform"
+                )
+            logger.info("Vision enabled (provider=%s)", self._vision_provider.get_name())
+
         # v2: background warm-up
         if self._config.asr.warm_up:
             asyncio.create_task(self._run_warmup())
 
         self._running = True
         logger.info(
-            "Orchestrator started. ASR=%s Cleanup=%s Insertion=%s Streaming=%s",
+            "Orchestrator started. ASR=%s Cleanup=%s Insertion=%s Streaming=%s Vision=%s",
             self._asr_provider.get_name(),
             self._cleanup_provider.get_name(),
             self._insertion_strategy.get_name(),
             self._streaming_enabled,
+            self._vision_enabled,
         )
 
     async def stop(self) -> None:
@@ -309,6 +349,13 @@ class Orchestrator:
                 cleanup_ready = True
         except Exception:
             logger.exception("Cleanup warm-up failed")
+
+        # v3: warm the vision provider's connection pool too (best-effort).
+        if self._vision_enabled and self._vision_provider is not None:
+            try:
+                await self._vision_provider.warm_up()
+            except Exception:
+                logger.exception("Vision warm-up failed")
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         self._event_bus.publish(
@@ -524,8 +571,15 @@ class Orchestrator:
                     if result.transitioned:
                         self._emit_state_change("transcribing", result.new_state)
 
-                    # WB-04: if pipelined cleanup was active, join accumulated segments
-                    if self._pipelined_cleanup_enabled and self._cleaned_segments:
+                    # WB-04: if pipelined cleanup was active, join accumulated segments.
+                    # When screenshots were captured we skip this fast path and fall
+                    # through to the unified path so vision splicing + a final cleanup
+                    # (with preserve_code) run over the whole merged text.
+                    if (
+                        self._pipelined_cleanup_enabled
+                        and self._cleaned_segments
+                        and not self._has_screenshots()
+                    ):
                         # Wait for any in-flight segment cleanups to complete
                         for task in self._pipelined_cleanup_tasks:
                             if not task.done():
@@ -574,8 +628,12 @@ class Orchestrator:
             # Step 3: Snippet expansion
             expanded_text = self._expand_snippets(corrected_text)
 
-            # Step 4: Cleanup
-            cleaned_text = await self._run_cleanup(expanded_text)
+            # Step 3.5: v3 vision — splice screenshot extractions at anchors
+            expanded_text, had_vision = await self._apply_vision(expanded_text)
+
+            # Step 4: Cleanup (force preserve_code when vision content is present
+            # so markdown tables and values survive the rewrite)
+            cleaned_text = await self._run_cleanup(expanded_text, force_preserve_code=had_vision)
 
             # Step 5: Insertion
             await self._run_insertion(cleaned_text)
@@ -729,8 +787,15 @@ class Orchestrator:
             detail=str(last_error) if last_error else None,
         )
 
-    async def _run_cleanup(self, transcript: str) -> str:
-        """Clean the transcript with retry logic (§6.3)."""
+    async def _run_cleanup(self, transcript: str, force_preserve_code: bool = False) -> str:
+        """Clean the transcript with retry logic (§6.3).
+
+        Args:
+            transcript: Text to clean.
+            force_preserve_code: When True, force ``preserve_code`` on regardless
+                of config — used when spliced screenshot extractions (markdown
+                tables, values) must survive the rewrite intact.
+        """
         assert self._cleanup_provider is not None
 
         if not self._cleanup_provider.is_available():
@@ -748,9 +813,10 @@ class Orchestrator:
         self._resolve_context()
         style = self._resolved_style if self._resolved_style else self._config.cleanup.style
 
+        preserve_code = self._config.cleanup.preserve_code or force_preserve_code
         cleanup_context = CleanupContext(
             style=style,
-            preserve_code=self._config.cleanup.preserve_code,
+            preserve_code=preserve_code,
             app_name=self._resolved_app_name,
         )
 
@@ -955,6 +1021,9 @@ class Orchestrator:
         the next dictation.
         """
         self._reset_streaming_state()
+        # v3: drop any screenshots left over from a prior/cancelled session.
+        if self._screenshot_capturer is not None:
+            self._screenshot_capturer.clear()
 
     # ── Vocabulary and Snippets ─────────────────────────────────────
 
@@ -969,6 +1038,80 @@ class Orchestrator:
         if self._snippets is not None:
             return self._snippets.expand(text)
         return text
+
+    # ── v3: Vision (screenshot-to-text) ──────────────────────────────
+
+    def _has_screenshots(self) -> bool:
+        """Return True if vision is on and screenshots are queued/in flight."""
+        return (
+            self._vision_enabled
+            and self._screenshot_capturer is not None
+            and self._screenshot_capturer.has_pending()
+        )
+
+    async def _apply_vision(self, text: str) -> tuple[str, bool]:
+        """Extract any captured screenshots and splice them into ``text``.
+
+        Returns ``(text, had_vision)`` where ``had_vision`` is True only when at
+        least one extraction was spliced in. The spoken ``text`` doubles as the
+        extraction instruction so the VLM infers the output format.
+        """
+        if (
+            not self._vision_enabled
+            or self._screenshot_capturer is None
+            or self._vision_provider is None
+            or self._anchor_splicer is None
+        ):
+            return text, False
+
+        # The user may still be dragging a selection — wait briefly off-loop.
+        if self._screenshot_capturer.has_pending():
+            await asyncio.to_thread(self._screenshot_capturer.wait_idle, _VISION_CAPTURE_GRACE_S)
+
+        shots = self._screenshot_capturer.drain()
+        if not shots:
+            return text, False
+
+        t0 = time.perf_counter()
+        context = VisionContext(
+            instruction=text,
+            preserve_code=self._config.cleanup.preserve_code,
+            app_name=self._resolved_app_name,
+            output_format=self._config.vision.output_format,
+        )
+
+        extractions: list[str] = []
+        for shot in shots:
+            try:
+                extracted = await self._vision_provider.extract(
+                    shot, instruction=text, context=context
+                )
+            except VisionError as exc:
+                logger.warning("Vision extraction failed for a screenshot: %s", exc)
+                continue
+            if extracted and extracted.strip():
+                extractions.append(extracted.strip())
+
+        if not extractions:
+            return text, False
+
+        spliced, anchors_matched = self._anchor_splicer.splice(text, extractions)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        self._event_bus.publish(TimingEvent(stage="vision", duration_ms=elapsed_ms))
+        self._event_bus.publish(
+            VisionExtractedEvent(
+                count=len(extractions),
+                anchors_matched=anchors_matched,
+                latency_ms=elapsed_ms,
+            )
+        )
+        logger.info(
+            "Vision: %d screenshot(s) extracted, %d anchor(s) matched (%d ms)",
+            len(extractions),
+            anchors_matched,
+            elapsed_ms,
+        )
+        return spliced, True
 
     # ── Event Emission Helpers ───────────────────────────────────────
 

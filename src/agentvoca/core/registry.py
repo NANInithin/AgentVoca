@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Type
 
-from agentvoca.config.schema import ASRConfig, CleanupConfig, InsertionConfig
+from agentvoca.config.schema import ASRConfig, CleanupConfig, InsertionConfig, VisionConfig
 from agentvoca.utils.errors import ProviderNotFoundError
 
 if TYPE_CHECKING:
     from ..asr.base import ASRProvider
     from ..cleanup.base import CleanupProvider
     from ..insertion.base import InsertionStrategy
+    from ..vision.base import VisionProvider
 
 
 class ProviderRegistry:
@@ -29,6 +30,7 @@ class ProviderRegistry:
         self._asr: dict[str, Type[ASRProvider]] = {}
         self._cleanup: dict[str, Type[CleanupProvider]] = {}
         self._insertion: dict[str, Type[InsertionStrategy]] = {}
+        self._vision: dict[str, Type[VisionProvider]] = {}
         if register_builtins:
             self._register_builtins()
 
@@ -38,11 +40,14 @@ class ProviderRegistry:
         # were to ever import the registry.
         from agentvoca.asr import BUILTIN_ASR_PROVIDERS
         from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
+        from agentvoca.vision import BUILTIN_VISION_PROVIDERS
 
         for name, cls in BUILTIN_ASR_PROVIDERS.items():
             self.register_asr(name, cls)
         for name, cls in BUILTIN_CLEANUP_PROVIDERS.items():
             self.register_cleanup(name, cls)
+        for name, cls in BUILTIN_VISION_PROVIDERS.items():
+            self.register_vision(name, cls)
 
     # ── Registration ──────────────────────────────────────────────────
 
@@ -72,6 +77,15 @@ class ProviderRegistry:
             cls: A concrete subclass of ``InsertionStrategy``.
         """
         self._insertion[name] = cls
+
+    def register_vision(self, name: str, cls: Type[VisionProvider]) -> None:
+        """Register a vision provider class under the given name.
+
+        Args:
+            name: Unique registry key (e.g., ``"openai_compatible"``).
+            cls: A concrete subclass of ``VisionProvider``.
+        """
+        self._vision[name] = cls
 
     # ── Lookup / Factory ──────────────────────────────────────────────
 
@@ -138,6 +152,27 @@ class ProviderRegistry:
             )
         return cls(config=config)
 
+    def get_vision(self, config: VisionConfig) -> VisionProvider:
+        """Construct and return a vision provider from config.
+
+        Args:
+            config: The vision configuration block.
+
+        Returns:
+            A new ``VisionProvider`` instance.
+
+        Raises:
+            ProviderNotFoundError: If ``config.provider`` is not registered.
+        """
+        name = config.provider
+        cls = self._vision.get(name)
+        if cls is None:
+            available = ", ".join(sorted(self._vision.keys()))
+            raise ProviderNotFoundError(
+                f"Unknown vision provider '{name}'. Available: {available}."
+            )
+        return cls(config=config)
+
     # ── Listing ───────────────────────────────────────────────────────
 
     def list_asr(self) -> list[str]:
@@ -151,3 +186,7 @@ class ProviderRegistry:
     def list_insertion(self) -> list[str]:
         """Return a sorted list of registered insertion strategy names."""
         return sorted(self._insertion.keys())
+
+    def list_vision(self) -> list[str]:
+        """Return a sorted list of registered vision provider names."""
+        return sorted(self._vision.keys())

@@ -147,13 +147,14 @@ class HotkeysConfig(BaseModel):
     insert_last_transcript: Optional[str] = None
     undo: Optional[str] = None  # e.g. "ctrl+alt+z" — reverts last insertion
     cancel: str = "escape"
+    capture_screenshot: Optional[str] = None  # v3: snip a screenshot during dictation
 
     @field_validator("toggle_recording", "open_settings", "cancel")
     @classmethod
     def _validate_hotkey(cls, value: str) -> str:
         return _validate_hotkey(value, cls.__name__)
 
-    @field_validator("insert_last_transcript", "undo")
+    @field_validator("insert_last_transcript", "undo", "capture_screenshot")
     @classmethod
     def _validate_optional_hotkey(cls, value: Optional[str]) -> Optional[str]:
         if value is not None:
@@ -205,6 +206,35 @@ class AdaptiveConfig(BaseModel):
         return value
 
 
+class VisionConfig(BaseModel):
+    """Vision / screenshot-to-text configuration (v3).
+
+    When enabled, a dedicated hotkey snips a screenshot mid-dictation; a
+    vision-language model extracts its content (tables, descriptions, values)
+    into markdown/text, which is spliced into the dictated text at spoken
+    anchor phrases (or appended at the end).
+    """
+
+    enabled: bool = False
+    provider: str = "openai_compatible"
+    endpoint: Optional[str] = None
+    api_key_env: Optional[str] = None  # name of env var, not the key itself
+    model: Optional[str] = None
+    capture_timeout_s: int = 30  # how long to wait for the user to finish snipping
+    # Spoken phrases that mark where extracted content is spliced. Empty → use
+    # the built-in defaults (see vision/anchors.py).
+    anchor_phrases: list[str] = Field(default_factory=list)
+    output_format: Literal["auto", "markdown", "plain"] = "auto"
+    extra: dict = Field(default_factory=dict)
+
+    @field_validator("capture_timeout_s")
+    @classmethod
+    def _validate_capture_timeout(cls, value: int) -> int:
+        if value < 1 or value > 300:
+            raise ConfigError("vision.capture_timeout_s must be in [1, 300].")
+        return value
+
+
 class FullConfig(BaseModel):
     """Top-level configuration model combining all sections."""
 
@@ -221,6 +251,9 @@ class FullConfig(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
     adaptive: AdaptiveConfig = Field(default_factory=AdaptiveConfig)
+
+    # -- v3: screenshot-to-text vision (optional, off by default) --
+    vision: VisionConfig = Field(default_factory=VisionConfig)
 
     @model_validator(mode="after")
     def _validate_api_key_env(self) -> "FullConfig":
@@ -240,6 +273,14 @@ class FullConfig(BaseModel):
                 raise ConfigError(
                     f"Cleanup provider '{self.cleanup.provider}' requires an API key. "
                     f"Set env var '{self.cleanup.api_key_env}'."
+                )
+
+        # v3: only enforce the vision key when the feature is turned on.
+        if self.vision.enabled and self.vision.api_key_env:
+            if self.vision.endpoint is not None and self.vision.api_key_env not in os.environ:
+                raise ConfigError(
+                    f"Vision provider '{self.vision.provider}' requires an API key. "
+                    f"Set env var '{self.vision.api_key_env}' or disable vision."
                 )
 
         return self

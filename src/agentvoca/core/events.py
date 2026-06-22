@@ -15,7 +15,14 @@ class HotkeyEvent:
         action: The hotkey action to perform.
     """
 
-    action: Literal["toggle_recording", "cancel", "open_settings", "insert_last", "undo"]
+    action: Literal[
+        "toggle_recording",
+        "cancel",
+        "open_settings",
+        "insert_last",
+        "undo",
+        "capture_screenshot",
+    ]
 
 
 @dataclass
@@ -231,6 +238,36 @@ class CorrectionLearnedEvent:
     wrong: str
     right: str
     promoted: bool = False
+
+
+@dataclass
+class ScreenshotCapturedEvent:
+    """Published when a screenshot is captured during a dictation session (v3).
+
+    Attributes:
+        index: Zero-based order of this capture within the current session.
+        width: Pixel width of the captured image, or None if unknown.
+        height: Pixel height of the captured image, or None if unknown.
+    """
+
+    index: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+@dataclass
+class VisionExtractedEvent:
+    """Published when vision extraction completes for the captured screenshots (v3).
+
+    Attributes:
+        count: Number of screenshots successfully extracted.
+        anchors_matched: Number of anchor phrases matched in the transcript.
+        latency_ms: Total extraction time in milliseconds.
+    """
+
+    count: int
+    anchors_matched: int
+    latency_ms: int
 
 
 @dataclass

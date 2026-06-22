@@ -21,16 +21,18 @@ from agentvoca.app.tray import TrayApp
 from agentvoca.asr import BUILTIN_ASR_PROVIDERS
 from agentvoca.audio.capture import AudioCapture
 from agentvoca.audio.chunker import AudioChunker
+from agentvoca.capture.screenshot import ScreenshotCapturer
 from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
 from agentvoca.config.loader import load_config
 from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
-from agentvoca.core.events import ErrorEvent, HotkeyEvent
+from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEvent
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion import BUILTIN_INSERTION_STRATEGIES
 from agentvoca.utils.errors import AgentVocaError, AudioError, ConfigError
 from agentvoca.utils.logging import setup_logging
+from agentvoca.vision import BUILTIN_VISION_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +55,16 @@ def _build_registry() -> ProviderRegistry:
         registry.register_insertion(name, cls)
         logger.debug("Registered insertion strategy: %s", name)
 
+    for name, cls in BUILTIN_VISION_PROVIDERS.items():
+        registry.register_vision(name, cls)
+        logger.debug("Registered vision provider: %s", name)
+
     logger.info(
-        "Provider registry initialized: %d ASR, %d cleanup, %d insertion",
+        "Provider registry initialized: %d ASR, %d cleanup, %d insertion, %d vision",
         len(registry.list_asr()),
         len(registry.list_cleanup()),
         len(registry.list_insertion()),
+        len(registry.list_vision()),
     )
     return registry
 
@@ -128,7 +135,25 @@ def main(argv: list[str] | None = None) -> int:
     event_bus.set_loop(loop_thread.loop)
 
     registry = _build_registry()
-    orchestrator = Orchestrator(config=config, registry=registry, event_bus=event_bus)
+
+    # ── v3: screenshot capture (only when vision is enabled) ──────────
+    screenshot_capturer: ScreenshotCapturer | None = None
+    if config.vision.enabled:
+        screenshot_capturer = ScreenshotCapturer(
+            event_bus=event_bus,
+            capture_timeout_s=config.vision.capture_timeout_s,
+        )
+        if not screenshot_capturer.is_available():
+            logger.warning(
+                "Vision enabled but no native screenshot tool was found on this platform"
+            )
+
+    orchestrator = Orchestrator(
+        config=config,
+        registry=registry,
+        event_bus=event_bus,
+        screenshot_capturer=screenshot_capturer,
+    )
 
     # ── UI ────────────────────────────────────────────────────────────
     settings_window: SettingsWindow | None = None
@@ -158,6 +183,20 @@ def main(argv: list[str] | None = None) -> int:
             tray.show_message("agentvoca Error", f"Error in {stage}: {message}", icon=2)
 
     event_bus.subscribe(ErrorEvent, on_error)
+
+    # ── v3: screenshot capture feedback ───────────────────────────────
+    if screenshot_capturer is not None:
+
+        def on_screenshot(event: object) -> None:
+            index = getattr(event, "index", 0)
+            logger.info("Screenshot %d captured for the current dictation", index + 1)
+            tray.show_message(
+                "agentvoca",
+                f"Screenshot {index + 1} captured — keep dictating.",
+                icon=1,
+            )
+
+        event_bus.subscribe(ScreenshotCapturedEvent, on_screenshot)
 
     # ── Audio capture ─────────────────────────────────────────────────
     # Build the streaming chunker only when streaming is enabled; otherwise
@@ -214,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
         hotkeys.register(config.hotkeys.insert_last_transcript, "insert_last")
     if config.hotkeys.undo:
         hotkeys.register(config.hotkeys.undo, "undo")
+    if config.vision.enabled and config.hotkeys.capture_screenshot:
+        hotkeys.register(config.hotkeys.capture_screenshot, "capture_screenshot")
 
     def on_hotkey(event: object) -> None:
         from agentvoca.core.events import StateChangedEvent  # noqa: PLC0415
@@ -239,6 +280,12 @@ def main(argv: list[str] | None = None) -> int:
             open_settings()
         elif action == "undo":
             loop_thread.submit(orchestrator.undo_last_insertion())
+        elif action == "capture_screenshot":
+            if screenshot_capturer is not None and audio.is_recording:
+                logger.debug("Capturing screenshot for current dictation")
+                screenshot_capturer.capture()
+            else:
+                logger.debug("Screenshot hotkey ignored (not recording)")
 
     event_bus.subscribe(HotkeyEvent, on_hotkey)
     hotkeys.start()

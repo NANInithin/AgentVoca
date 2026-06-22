@@ -24,6 +24,14 @@ class InsertionError(AgentVocaError):
     """Raised when text insertion fails."""
 
 
+class VisionError(AgentVocaError):
+    """Raised when a vision (VLM) extraction fails."""
+
+
+class CaptureError(AgentVocaError):
+    """Raised when screenshot capture fails."""
+
+
 class AudioError(AgentVocaError):
     """Raised when audio capture or playback fails."""
 

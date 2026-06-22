@@ -15,6 +15,7 @@ result inserted directly at the cursor in the active application.
 - **Context-aware formatting** — pick a cleanup style based on the active app _(v2)_
 - **Voice commands** — "new paragraph", "scratch that", and friends _(v2)_
 - **Adaptive vocabulary** — the app learns your corrections and applies them automatically _(v2)_
+- **Screenshot-to-text** — snip a region mid-dictation; a vision model turns it into markdown/text spliced into your dictation _(v3)_
 - **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are never mangled by the LLM
 - **Vocabulary substitution** — teach the app correct casing for your domain terms
 - **Snippet expansion** — expand short triggers into full phrases
@@ -249,6 +250,12 @@ See `examples/` for more configuration examples.
 | Keyboard simulation | `keyboard` | Default. Uses pyautogui to type at the cursor. |
 | Clipboard paste | `clipboard` | Writes to clipboard and sends Ctrl+V / Cmd+V. |
 
+### Vision _(v3)_
+
+| Name | Config value | Notes |
+|---|---|---|
+| OpenAI-compatible VLM | `openai_compatible` | Sends a snipped screenshot to any chat-completions vision endpoint (OpenAI, OpenRouter, Anthropic, Ollama). Opt-in; requires an API key. See [docs/vision.md](docs/vision.md). |
+
 ---
 
 ## CLI options
@@ -364,6 +371,38 @@ uv run python scripts/benchmark.py --mode real   # real local models over WAV fi
 
 ---
 
+## What's new in v3
+
+v3 adds **screenshot-to-text**: instead of pasting a token-expensive image into
+a downstream AI tool, snip a region while dictating and have a vision model
+extract its content as markdown/text, woven into your dictation.
+
+```yaml
+vision:
+  enabled: true
+  endpoint: https://openrouter.ai/api/v1   # any OpenAI-compatible vision endpoint
+  api_key_env: OPENROUTER_API_KEY
+  model: openai/gpt-4o-mini                # vision-capable model
+  output_format: auto                      # auto | markdown | plain
+
+hotkeys:
+  capture_screenshot: ctrl+shift+s
+```
+
+While recording, press the capture hotkey to snip with your OS tool. Say an
+anchor phrase ("…as in **the attached screenshot**") to mark where the
+extraction goes — multiple snips map to multiple anchors in order; otherwise the
+result is appended at the end. The spoken text doubles as the extraction
+instruction, so "make a table of the expenses" yields a markdown table.
+
+> **Opt-in and API-based.** Vision is off by default; when enabled, snipped
+> screenshots are sent to the configured endpoint. Everything else stays local.
+> An in-process offline VLM (GOT-OCR 2.0) is planned for a later release.
+
+Full details: [docs/vision.md](docs/vision.md).
+
+---
+
 ## Documentation
 
 | Document | Description |
@@ -371,6 +410,7 @@ uv run python scripts/benchmark.py --mode real   # real local models over WAV fi
 | [docs/config-reference.md](docs/config-reference.md) | Every config key, type, default, and constraint |
 | [docs/performance.md](docs/performance.md) | Latency budgets, streaming/warm-up tuning, benchmark harness |
 | [docs/context-and-commands.md](docs/context-and-commands.md) | Context profiles, voice commands, adaptive vocab, privacy |
+| [docs/vision.md](docs/vision.md) | Screenshot-to-text: capture, anchors, models, privacy _(v3)_ |
 | [docs/providers.md](docs/providers.md) | How to implement and register a new provider |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |
 

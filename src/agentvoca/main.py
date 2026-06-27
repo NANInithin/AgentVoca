@@ -86,12 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version:
-        from importlib.metadata import version as _version
-
-        try:
-            ver = _version("agentvoca")
-        except Exception:
-            ver = "0.1.0 (dev)"
+        # Prefer the in-package constant: it's always bundled into the frozen
+        # PyInstaller exe, whereas package metadata (.dist-info) is not, which
+        # is why frozen builds otherwise fell back to a stale hardcoded string.
+        from agentvoca import __version__ as ver
         print(f"agentvoca {ver}")
         return 0
 

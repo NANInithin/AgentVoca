@@ -386,7 +386,7 @@ vision:
   output_format: auto                      # auto | markdown | plain
 
 hotkeys:
-  capture_screenshot: ctrl+shift+s
+  capture_screenshot: ctrl+k
 ```
 
 While recording, press the capture hotkey to snip with your OS tool. Say an

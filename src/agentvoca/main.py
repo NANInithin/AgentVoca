@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         # PyInstaller exe, whereas package metadata (.dist-info) is not, which
         # is why frozen builds otherwise fell back to a stale hardcoded string.
         from agentvoca import __version__ as ver
+
         print(f"agentvoca {ver}")
         return 0
 

@@ -96,6 +96,7 @@ class TrayApp(QtCore.QObject):
         self._status_action.setEnabled(False)
         self._menu.addSeparator()
         self._open_settings_action = self._menu.addAction("Settings…")
+        self._open_wizard_action = self._menu.addAction("Setup Wizard…")
         self._quit_action = self._menu.addAction("Quit")
         self._tray.setContextMenu(self._menu)
 
@@ -130,6 +131,11 @@ class TrayApp(QtCore.QObject):
     def open_settings_action(self) -> QtGui.QAction:
         """Action that triggers the settings window."""
         return self._open_settings_action
+
+    @property
+    def open_wizard_action(self) -> QtGui.QAction:
+        """Action that triggers the setup wizard."""
+        return self._open_wizard_action
 
     @property
     def quit_action(self) -> QtGui.QAction:

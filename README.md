@@ -29,6 +29,25 @@ result inserted directly at the cursor in the active application.
 
 ---
 
+## What's new in v0.3.5
+
+The v0.3.5 release replaces manual YAML editing with an **interactive setup
+wizard** and a **tabbed Settings window** in the tray. Every setting in
+`config.yaml` is now exposed in the UI:
+
+- **Setup wizard** auto-opens on every launch (toggle on the Welcome page).
+- **Tabbed Settings window** for day-to-day tweaks.
+- **One-click defaults** for the most common configurations.
+- **API-key helper** that sets the env var for the current session and
+  copies a permanent shell snippet (PowerShell, bash, fish).
+- **Hot-apply** for supported fields — vocab, snippets, cleanup provider,
+  hotkeys, and adaptive vocab take effect immediately. The Settings window
+  shows a banner listing fields that need a restart.
+
+See [docs/user-setup.md](docs/user-setup.md) for a full walkthrough.
+
+---
+
 ## Installation
 
 Choose one of the two paths below depending on how you want to use AgentVoca.
@@ -55,26 +74,13 @@ Open PowerShell and run:
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca"
 ```
 
-**Step 3 — Create your config file**
+**Step 3 — Run the app**
 
-Download [`config.example.yaml`](https://github.com/NANInithin/AgentVoca/blob/main/config.example.yaml)
-from the repo and save it as `config.yaml` inside the folder you just created:
-
-```
-C:\Users\<YourName>\.agentvoca\config.yaml
-```
-
-Or do it in one PowerShell command:
-
-```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/NANInithin/AgentVoca/main/config.example.yaml" `
-  -OutFile "$env:USERPROFILE\.agentvoca\config.yaml"
-```
-
-**Step 4 — Run the app**
-
-Double-click `AgentVoca.exe` inside the extracted folder. The app starts in the system tray.
-Press **Ctrl+Space** to start and stop recording.
+Double-click `AgentVoca.exe` inside the extracted folder. The app starts in
+the system tray **and the setup wizard opens automatically** — pick "Use
+defaults" for a fast, offline experience, or "Customize" to walk through
+every setting. You can re-open the wizard any time from the tray menu
+(Setup Wizard…).
 
 > No API key is needed by default. The app uses local faster-whisper + rules-based cleanup
 > out of the box. See [Cleanup Providers](#cleanup-providers) if you want LLM-powered cleanup.
@@ -99,27 +105,17 @@ cd AgentVoca
 uv sync
 ```
 
-**Step 3 — Create a config file**
-
-**macOS / Linux**
-
-```bash
-mkdir -p ~/.agentvoca
-cp config.example.yaml ~/.agentvoca/config.yaml
-```
-
-**Windows (PowerShell)**
-
-```powershell
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca" | Out-Null
-Copy-Item config.example.yaml "$env:USERPROFILE\.agentvoca\config.yaml"
-```
-
-**Step 4 — Run**
+**Step 3 — Run**
 
 ```bash
 uv run agentvoca
 ```
+
+The app starts in the system tray **and the setup wizard opens automatically**.
+Pick "Use defaults" for a fast, offline experience, or "Customize" to walk
+through every setting. You can re-open the wizard any time from the tray
+menu (Setup Wizard…). See [docs/user-setup.md](docs/user-setup.md) for a
+detailed walkthrough.
 
 The app starts in the system tray. Press **Ctrl+Space** (default) to start and stop recording.
 
@@ -407,6 +403,7 @@ Full details: [docs/vision.md](docs/vision.md).
 
 | Document | Description |
 |---|---|
+| [docs/user-setup.md](docs/user-setup.md) | First-time setup using the interactive wizard _(v0.3.5)_ |
 | [docs/config-reference.md](docs/config-reference.md) | Every config key, type, default, and constraint |
 | [docs/performance.md](docs/performance.md) | Latency budgets, streaming/warm-up tuning, benchmark harness |
 | [docs/context-and-commands.md](docs/context-and-commands.md) | Context profiles, voice commands, adaptive vocab, privacy |

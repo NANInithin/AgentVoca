@@ -161,3 +161,14 @@ class HotkeyManager:
             self._listener.stop()
             self._listener = None
             logger.info("Hotkey listener stopped")
+
+    def unregister_all(self) -> None:
+        """Forget every registered hotkey.
+
+        Used by the v0.3.5 settings window to clear the registry before
+        re-registering a new set with the user's updated bindings. Does not
+        touch the listener — the caller is expected to stop / restart it
+        if the listener itself needs to be replaced.
+        """
+        self._hotkeys.clear()
+        logger.debug("Cleared all registered hotkeys")

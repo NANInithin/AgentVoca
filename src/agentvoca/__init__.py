@@ -4,4 +4,4 @@
 # bundled into the PyInstaller build (it's source code), unlike package metadata
 # (.dist-info), which is not packaged into the frozen exe. Keep this in sync with
 # the version in pyproject.toml on every release.
-__version__ = "0.3.0"
+__version__ = "0.3.5"

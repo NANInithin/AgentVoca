@@ -1152,3 +1152,100 @@ class Orchestrator:
                 self._current_transcript = None
 
         self._error_timer_task = asyncio.create_task(_timeout())
+
+    # ── Hot-apply (v0.3.5 settings UI) ─────────────────────────────────
+    #
+    # ``apply_config_update`` is called by ``main.py`` after the user saves a
+    # change in the settings window. Fields classified as hot by
+    # ``setup.controllers.restart_policy`` are re-applied here without
+    # restarting the pipeline; restart-only fields are ignored (the UI shows
+    # a "restart required" banner so the user can do it themselves).
+
+    def apply_config_update(self, new_config: "FullConfig") -> None:
+        """Hot-apply every supported field from ``new_config``.
+
+        Restart-only fields (ASR provider, audio device, etc.) are skipped.
+        The caller is expected to surface the restart-required paths to the
+        user via the settings window's banner.
+
+        Args:
+            new_config: The freshly-saved config.
+        """
+        from agentvoca.setup.controllers.restart_policy import is_hot_field  # noqa: PLC0415
+
+        # ── Vocabulary: rebuild the in-memory dictionary ────────────────
+        if is_hot_field("vocabulary.path") or is_hot_field("vocabulary.inline"):
+            try:
+                self._vocab = VocabularyDictionary(
+                    path=new_config.vocabulary.path,
+                    terms=new_config.vocabulary.inline,
+                )
+                # Re-merge any learned mappings (adaptive store may have
+                # promoted corrections since last reload).
+                if self._adaptive_store is not None:
+                    for wrong, right in self._adaptive_store.get_mappings():
+                        self._vocab.add_mapping(wrong, right)
+                logger.info("Vocabulary reloaded (%d terms)", len(self._vocab.terms))
+            except Exception:
+                logger.exception("Failed to reload vocabulary; keeping old one")
+
+        # ── Snippets: rebuild the expander ──────────────────────────────
+        if is_hot_field("snippets.path"):
+            try:
+                self._snippets = SnippetExpander(path=new_config.snippets.path)
+                logger.info("Snippets reloaded (%d triggers)", len(self._snippets.mapping))
+            except Exception:
+                logger.exception("Failed to reload snippets; keeping old ones")
+
+        # ── Cleanup provider: re-instantiate ───────────────────────────
+        if any(
+            is_hot_field(f)
+            for f in (
+                "cleanup.provider",
+                "cleanup.model",
+                "cleanup.endpoint",
+                "cleanup.api_key_env",
+                "cleanup.style",
+                "cleanup.preserve_code",
+                "cleanup.custom_prompt_path",
+                "cleanup.warm_up",
+            )
+        ):
+            try:
+                self._cleanup_provider = self._registry.get_cleanup(new_config.cleanup)
+                if not self._cleanup_provider.is_available():
+                    logger.warning(
+                        "New cleanup provider '%s' reports unavailable",
+                        self._cleanup_provider.get_name(),
+                    )
+                else:
+                    logger.info("Cleanup provider reloaded: %s", self._cleanup_provider.get_name())
+            except Exception:
+                logger.exception("Failed to reload cleanup provider; keeping old one")
+
+        # ── Adaptive / context / commands / vision: mostly lazy, but
+        # replace the command processor and adaptive store eagerly so any
+        # newly-loaded phrases/mappings take effect on the next dictation.
+        if is_hot_field("commands.enabled") or is_hot_field("commands.phrases"):
+            self._command_processor = DefaultCommandProcessor(
+                phrase_overrides=new_config.commands.phrases
+            )
+
+        if (
+            is_hot_field("adaptive.enabled")
+            or is_hot_field("adaptive.promote_threshold")
+            or is_hot_field("adaptive.learned_vocab_path")
+        ):
+            self._adaptive_store = AdaptiveStore(
+                learned_vocab_path=new_config.adaptive.learned_vocab_path,
+                promote_threshold=new_config.adaptive.promote_threshold,
+            )
+
+        if is_hot_field("context.enabled") or is_hot_field("context.profiles"):
+            self._context_enabled = new_config.context.enabled
+            if self._context_enabled and self._profile_resolver is not None:
+                self._profile_resolver = ProfileResolver(profiles=dict(new_config.context.profiles))
+
+        # Vision's runtime knobs (anchors, output_format, timeout) are read
+        # lazily from ``self._config`` by ``_apply_vision``, so re-saving
+        # the config instance is sufficient — no further action needed here.

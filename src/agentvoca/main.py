@@ -16,7 +16,6 @@ from PySide6 import QtWidgets
 
 from agentvoca.app.hotkeys import HotkeyManager
 from agentvoca.app.overlay import StatusOverlay
-from agentvoca.app.settings import SettingsWindow
 from agentvoca.app.tray import TrayApp
 from agentvoca.asr import BUILTIN_ASR_PROVIDERS
 from agentvoca.audio.capture import AudioCapture
@@ -24,12 +23,17 @@ from agentvoca.audio.chunker import AudioChunker
 from agentvoca.capture.screenshot import ScreenshotCapturer
 from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
 from agentvoca.config.loader import load_config
+from agentvoca.config.schema import ASRConfig, FullConfig
 from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
 from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEvent
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion import BUILTIN_INSERTION_STRATEGIES
+from agentvoca.setup.controllers.config_controller import load_controller
+from agentvoca.setup.first_run import load_state
+from agentvoca.setup.settings_window import SettingsWindow
+from agentvoca.setup.wizard import SetupWizard
 from agentvoca.utils.errors import AgentVocaError, AudioError, ConfigError
 from agentvoca.utils.logging import setup_logging
 from agentvoca.vision import BUILTIN_VISION_PROVIDERS
@@ -109,14 +113,19 @@ def main(argv: list[str] | None = None) -> int:
                 "Config file not found at %s. Using defaults (faster_whisper base model).",
                 config_path,
             )
-            from agentvoca.config.schema import ASRConfig, FullConfig
-
             # Default to the 'base' model so faster-whisper has a model to load
             config = FullConfig(asr=ASRConfig(provider="faster_whisper", model="base"))
     except ConfigError as exc:
         logger.error("Config error: %s", exc)
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
+
+    # ── Config controller (v0.3.5 setup wizard / settings) ───────────
+    # The wizard and tabbed settings window both go through a single
+    # ConfigController that owns an in-memory draft + save semantics.
+    controller = load_controller(config_path)
+    if not config_path.is_file():
+        controller.replace_draft(config)
 
     # ── Qt Application ───────────────────────────────────────────────
     app = QtWidgets.QApplication(sys.argv)
@@ -156,20 +165,50 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── UI ────────────────────────────────────────────────────────────
     settings_window: SettingsWindow | None = None
+    wizard: SetupWizard | None = None
+
+    def _reload_hot_components(new_config: FullConfig) -> None:
+        """Hot-apply everything we can from a freshly-saved config.
+
+        Called after the user saves from the wizard or settings window. Hot
+        fields are pushed into the orchestrator; hotkeys are unregistered and
+        re-registered; restart-only fields are surfaced via a notification
+        so the user knows to relaunch.
+        """
+        # Hot-apply providers / vocab / snippets / etc.
+        try:
+            orchestrator.apply_config_update(new_config)
+        except Exception:
+            logger.exception("Hot-apply failed; some changes may need a restart")
+
+        # Re-register hotkeys (they may have changed).
+        try:
+            hotkeys.unregister_all()
+            _register_hotkeys(hotkeys, new_config)
+            logger.info("Hotkeys re-registered")
+        except Exception:
+            logger.exception("Failed to re-register hotkeys")
 
     def open_settings() -> None:
         nonlocal settings_window
-        if settings_window is None or not settings_window.isVisible():
-            settings_window = SettingsWindow(config)
-            settings_window.show()
-        else:
-            settings_window.raise_()
-            settings_window.activateWindow()
+        settings_window = SettingsWindow(controller)
+        settings_window.config_saved.connect(_reload_hot_components)
+        settings_window.show()
+        settings_window.raise_()
+        settings_window.activateWindow()
+
+    def open_wizard() -> None:
+        nonlocal wizard
+        wizard = SetupWizard(controller)
+        wizard.show()
+        wizard.raise_()
+        wizard.activateWindow()
 
     overlay = StatusOverlay(event_bus)
 
     tray = TrayApp(event_bus)
     tray.open_settings_action.triggered.connect(open_settings)
+    tray.open_wizard_action.triggered.connect(open_wizard)
     tray.quit_action.triggered.connect(app.quit)
 
     # ── Error notifications ───────────────────────────────────────────
@@ -245,15 +284,20 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Hotkeys ───────────────────────────────────────────────────────
     hotkeys = HotkeyManager(event_bus)
-    hotkeys.register(config.hotkeys.toggle_recording, "toggle_recording")
-    hotkeys.register(config.hotkeys.cancel, "cancel")
-    hotkeys.register(config.hotkeys.open_settings, "open_settings")
-    if config.hotkeys.insert_last_transcript:
-        hotkeys.register(config.hotkeys.insert_last_transcript, "insert_last")
-    if config.hotkeys.undo:
-        hotkeys.register(config.hotkeys.undo, "undo")
-    if config.vision.enabled and config.hotkeys.capture_screenshot:
-        hotkeys.register(config.hotkeys.capture_screenshot, "capture_screenshot")
+
+    def _register_hotkeys(manager: HotkeyManager, cfg: FullConfig) -> None:
+        """Bind every configured hotkey on ``manager``."""
+        manager.register(cfg.hotkeys.toggle_recording, "toggle_recording")
+        manager.register(cfg.hotkeys.cancel, "cancel")
+        manager.register(cfg.hotkeys.open_settings, "open_settings")
+        if cfg.hotkeys.insert_last_transcript:
+            manager.register(cfg.hotkeys.insert_last_transcript, "insert_last")
+        if cfg.hotkeys.undo:
+            manager.register(cfg.hotkeys.undo, "undo")
+        if cfg.vision.enabled and cfg.hotkeys.capture_screenshot:
+            manager.register(cfg.hotkeys.capture_screenshot, "capture_screenshot")
+
+    _register_hotkeys(hotkeys, config)
 
     def on_hotkey(event: object) -> None:
         from agentvoca.core.events import StateChangedEvent  # noqa: PLC0415
@@ -290,6 +334,16 @@ def main(argv: list[str] | None = None) -> int:
     hotkeys.start()
     logger.info("Hotkeys active — press %s to record", config.hotkeys.toggle_recording)
 
+    # ── v0.3.5: auto-open setup wizard on every launch ─────────────────
+    state = load_state()
+    if state.wizard_auto_open:
+        wizard = SetupWizard(controller)
+        wizard.config_saved.connect(_reload_hot_components)
+        # Make the wizard non-blocking so the tray + hotkey are still
+        # usable while the user reviews settings.
+        wizard.show()
+        logger.info("Setup wizard shown on startup (auto-open enabled)")
+
     # ── Main loop ─────────────────────────────────────────────────────
     try:
         exit_code = app.exec()
@@ -298,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0
     finally:
         logger.info("Shutting down…")
+        if wizard is not None:
+            wizard.close()
+        if settings_window is not None:
+            settings_window.close()
         hotkeys.stop()
         audio.stop()
         try:

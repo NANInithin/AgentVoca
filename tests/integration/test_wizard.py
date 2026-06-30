@@ -9,10 +9,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
-from agentvoca.setup.controllers.config_controller import load_controller
-from agentvoca.setup.wizard import SetupWizard
+# PySide6 + the system Qt libraries are a hard runtime requirement. On a
+# minimal container without libEGL / libxkbcommon, skip the test set rather
+# than fail collection.
+pytest.importorskip("PySide6", reason="PySide6 (Qt) not available")
+
+from agentvoca.setup.controllers.config_controller import load_controller  # noqa: E402
+from agentvoca.setup.wizard import SetupWizard  # noqa: E402
 
 
 def test_wizard_constructs_with_eight_pages(qapp, tmp_path: Path):

@@ -37,6 +37,10 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
         if config.api_key_env:
             self._api_key = os.environ.get(config.api_key_env)
 
+        # R9: cache the custom prompt file's (mtime, content) so we don't
+        # re-read it on every rewrite(). Invalidated by mtime change.
+        self._prompt_cache: tuple[float, str] | None = None
+
     # ── v2: warm-up ──────────────────────────────────────────────────
 
     async def warm_up(self) -> None:
@@ -62,6 +66,23 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
     def get_name(self) -> str:
         """Return the registry key for this provider."""
         return "openai_compatible"
+
+    def _load_custom_prompt(self) -> str:
+        """Read custom_prompt_path, cached by mtime so edits are picked up."""
+        path = self._config.custom_prompt_path
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError as e:
+            raise CleanupError(f"Failed to load custom prompt file: {e}")
+        if self._prompt_cache is not None and self._prompt_cache[0] == mtime:
+            return self._prompt_cache[1]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            raise CleanupError(f"Failed to load custom prompt file: {e}")
+        self._prompt_cache = (mtime, content)
+        return content
 
     def is_available(self) -> bool:
         """Return True if endpoint and API key (if required) are set."""
@@ -97,11 +118,7 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
 
         # Load custom prompt from file if configured but not passed in context
         if not custom_prompt and self._config.custom_prompt_path:
-            try:
-                with open(self._config.custom_prompt_path, "r", encoding="utf-8") as f:
-                    custom_prompt = f.read()
-            except Exception as e:
-                raise CleanupError(f"Failed to load custom prompt file: {e}")
+            custom_prompt = self._load_custom_prompt()
 
         system_prompt = get_cleanup_prompt(
             style=style, custom_prompt=custom_prompt, preserve_code=preserve_code

@@ -17,11 +17,9 @@ from PySide6 import QtWidgets
 from agentvoca.app.hotkeys import HotkeyManager
 from agentvoca.app.overlay import StatusOverlay
 from agentvoca.app.tray import TrayApp
-from agentvoca.asr import BUILTIN_ASR_PROVIDERS
 from agentvoca.audio.capture import AudioCapture
 from agentvoca.audio.chunker import AudioChunker
 from agentvoca.capture.screenshot import ScreenshotCapturer
-from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
 from agentvoca.config.loader import load_config_lenient
 from agentvoca.config.schema import ASRConfig, FullConfig
 from agentvoca.core.async_loop import AsyncLoopThread
@@ -29,7 +27,6 @@ from agentvoca.core.event_bus import EventBus
 from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEvent
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
-from agentvoca.insertion import BUILTIN_INSERTION_STRATEGIES
 from agentvoca.insertion._executor import shutdown_input_executor
 from agentvoca.setup.controllers.config_controller import ConfigController
 from agentvoca.setup.first_run import load_state
@@ -37,7 +34,6 @@ from agentvoca.setup.settings_window import SettingsWindow
 from agentvoca.setup.wizard import SetupWizard
 from agentvoca.utils.errors import AgentVocaError, AudioError, ConfigError
 from agentvoca.utils.logging import setup_logging
-from agentvoca.vision import BUILTIN_VISION_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +41,22 @@ _DEFAULT_CONFIG_PATH = Path.home() / ".agentvoca" / "config.yaml"
 
 
 def _build_registry() -> ProviderRegistry:
-    """Build the provider registry with all built-in providers."""
+    """Build the provider registry with all built-in providers.
+
+    R14: built-in providers are registered as ``"module:Class"`` dotted
+    paths inside ``ProviderRegistry.__init__``; this function just logs
+    the names and returns the registry. The actual provider modules are
+    imported only when ``get_*()`` is called for the configured provider.
+    """
     registry = ProviderRegistry()
 
-    for name, cls in BUILTIN_ASR_PROVIDERS.items():
-        registry.register_asr(name, cls)
+    for name in registry.list_asr():
         logger.debug("Registered ASR provider: %s", name)
-
-    for name, cls in BUILTIN_CLEANUP_PROVIDERS.items():
-        registry.register_cleanup(name, cls)
+    for name in registry.list_cleanup():
         logger.debug("Registered cleanup provider: %s", name)
-
-    for name, cls in BUILTIN_INSERTION_STRATEGIES.items():
-        registry.register_insertion(name, cls)
+    for name in registry.list_insertion():
         logger.debug("Registered insertion strategy: %s", name)
-
-    for name, cls in BUILTIN_VISION_PROVIDERS.items():
-        registry.register_vision(name, cls)
+    for name in registry.list_vision():
         logger.debug("Registered vision provider: %s", name)
 
     logger.info(

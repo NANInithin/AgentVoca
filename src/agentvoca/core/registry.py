@@ -2,11 +2,16 @@
 
 The registry maps string names to provider classes. The orchestrator (or tests)
 construct instances by calling ``get_*`` with a config object.
+
+R14: built-in entries are registered as ``"module:ClassName"`` dotted paths
+and resolved on first lookup. This keeps ``ctranslate2`` / numpy / heavy
+provider imports out of the cold-start import path.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Type
+import importlib
+from typing import TYPE_CHECKING, Type, Union
 
 from agentvoca.config.schema import ASRConfig, CleanupConfig, InsertionConfig, VisionConfig
 from agentvoca.utils.errors import ProviderNotFoundError
@@ -16,6 +21,12 @@ if TYPE_CHECKING:
     from ..cleanup.base import CleanupProvider
     from ..insertion.base import InsertionStrategy
     from ..vision.base import VisionProvider
+
+# A registered entry is either an already-imported class (the public
+# contract for plugins and tests) or a "module:Class" string for lazy
+# built-ins. Resolved entries are cached back into the same dict so the
+# import runs at most once per name.
+_ProviderEntry = Union[Type, str]
 
 
 class ProviderRegistry:
@@ -27,27 +38,59 @@ class ProviderRegistry:
     """
 
     def __init__(self, register_builtins: bool = True) -> None:
-        self._asr: dict[str, Type[ASRProvider]] = {}
-        self._cleanup: dict[str, Type[CleanupProvider]] = {}
-        self._insertion: dict[str, Type[InsertionStrategy]] = {}
-        self._vision: dict[str, Type[VisionProvider]] = {}
+        self._asr: dict[str, _ProviderEntry] = {}
+        self._cleanup: dict[str, _ProviderEntry] = {}
+        self._insertion: dict[str, _ProviderEntry] = {}
+        self._vision: dict[str, _ProviderEntry] = {}
         if register_builtins:
             self._register_builtins()
 
     def _register_builtins(self) -> None:
-        """Register all built-in providers and strategies."""
-        # We import locally to avoid circular dependencies if any providers
-        # were to ever import the registry.
-        from agentvoca.asr import BUILTIN_ASR_PROVIDERS
-        from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
-        from agentvoca.vision import BUILTIN_VISION_PROVIDERS
+        """Register all built-in providers and strategies as dotted paths.
 
-        for name, cls in BUILTIN_ASR_PROVIDERS.items():
-            self.register_asr(name, cls)
-        for name, cls in BUILTIN_CLEANUP_PROVIDERS.items():
-            self.register_cleanup(name, cls)
-        for name, cls in BUILTIN_VISION_PROVIDERS.items():
-            self.register_vision(name, cls)
+        No provider package is imported here — the dotted paths are
+        resolved on the first ``get_*`` call that needs them. This keeps
+        ``faster_whisper.py`` (which imports ctranslate2 and runs
+        ``_register_cuda_dlls``) and other heavy modules out of the
+        cold-start import graph.
+        """
+        self.register_asr(
+            "faster_whisper", "agentvoca.asr.faster_whisper:FasterWhisperProvider"
+        )
+        self.register_asr(
+            "openai_compatible",
+            "agentvoca.asr.openai_compatible:OpenAICompatibleASRProvider",
+        )
+        self.register_cleanup(
+            "none", "agentvoca.cleanup.none:NoneCleanupProvider"
+        )
+        self.register_cleanup(
+            "openai_compatible",
+            "agentvoca.cleanup.openai_compatible:OpenAICompatibleCleanupProvider",
+        )
+        self.register_cleanup(
+            "rules", "agentvoca.cleanup.rules:RulesCleanupProvider"
+        )
+        self.register_vision(
+            "openai_compatible",
+            "agentvoca.vision.openai_compatible:OpenAICompatibleVisionProvider",
+        )
+        # Insertion strategies are light (pyautogui only) but register
+        # lazily too for symmetry.
+        self.register_insertion(
+            "keyboard", "agentvoca.insertion.keyboard:KeyboardInsertionStrategy"
+        )
+        self.register_insertion(
+            "clipboard", "agentvoca.insertion.clipboard:ClipboardInsertionStrategy"
+        )
+
+    def _resolve(self, entry: _ProviderEntry) -> type:
+        """Resolve a lazily-registered ``"module:Class"`` path to a class."""
+        if isinstance(entry, str):
+            module_name, _, class_name = entry.partition(":")
+            module = importlib.import_module(module_name)
+            return getattr(module, class_name)
+        return entry
 
     # ── Registration ──────────────────────────────────────────────────
 
@@ -56,7 +99,8 @@ class ProviderRegistry:
 
         Args:
             name: Unique registry key (e.g., ``"faster_whisper"``).
-            cls: A concrete subclass of ``ASRProvider``.
+            cls: A concrete subclass of ``ASRProvider`` or a
+                ``"module:Class"`` dotted path.
         """
         self._asr[name] = cls
 
@@ -65,7 +109,8 @@ class ProviderRegistry:
 
         Args:
             name: Unique registry key (e.g., ``"rules"``).
-            cls: A concrete subclass of ``CleanupProvider``.
+            cls: A concrete subclass of ``CleanupProvider`` or a
+                ``"module:Class"`` dotted path.
         """
         self._cleanup[name] = cls
 
@@ -74,7 +119,8 @@ class ProviderRegistry:
 
         Args:
             name: Unique registry key (e.g., ``"keyboard"``).
-            cls: A concrete subclass of ``InsertionStrategy``.
+            cls: A concrete subclass of ``InsertionStrategy`` or a
+                ``"module:Class"`` dotted path.
         """
         self._insertion[name] = cls
 
@@ -83,7 +129,8 @@ class ProviderRegistry:
 
         Args:
             name: Unique registry key (e.g., ``"openai_compatible"``).
-            cls: A concrete subclass of ``VisionProvider``.
+            cls: A concrete subclass of ``VisionProvider`` or a
+                ``"module:Class"`` dotted path.
         """
         self._vision[name] = cls
 
@@ -102,12 +149,14 @@ class ProviderRegistry:
             ProviderNotFoundError: If ``config.provider`` is not registered.
         """
         name = config.provider
-        cls = self._asr.get(name)
-        if cls is None:
+        entry = self._asr.get(name)
+        if entry is None:
             available = ", ".join(sorted(self._asr.keys()))
             raise ProviderNotFoundError(
                 f"Unknown ASR provider '{name}'. Available: {available}. Check docs/providers.md."
             )
+        cls = self._resolve(entry)
+        self._asr[name] = cls  # cache the resolved class
         return cls(config=config)
 
     def get_cleanup(self, config: CleanupConfig) -> CleanupProvider:
@@ -123,12 +172,14 @@ class ProviderRegistry:
             ProviderNotFoundError: If ``config.provider`` is not registered.
         """
         name = config.provider
-        cls = self._cleanup.get(name)
-        if cls is None:
+        entry = self._cleanup.get(name)
+        if entry is None:
             available = ", ".join(sorted(self._cleanup.keys()))
             raise ProviderNotFoundError(
                 f"Unknown cleanup provider '{name}'. Available: {available}."
             )
+        cls = self._resolve(entry)
+        self._cleanup[name] = cls
         return cls(config=config)
 
     def get_insertion(self, config: InsertionConfig) -> InsertionStrategy:
@@ -144,12 +195,14 @@ class ProviderRegistry:
             ProviderNotFoundError: If ``config.strategy`` is not registered.
         """
         name = config.strategy
-        cls = self._insertion.get(name)
-        if cls is None:
+        entry = self._insertion.get(name)
+        if entry is None:
             available = ", ".join(sorted(self._insertion.keys()))
             raise ProviderNotFoundError(
                 f"Unknown insertion strategy '{name}'. Available: {available}."
             )
+        cls = self._resolve(entry)
+        self._insertion[name] = cls
         return cls(config=config)
 
     def get_vision(self, config: VisionConfig) -> VisionProvider:
@@ -165,12 +218,14 @@ class ProviderRegistry:
             ProviderNotFoundError: If ``config.provider`` is not registered.
         """
         name = config.provider
-        cls = self._vision.get(name)
-        if cls is None:
+        entry = self._vision.get(name)
+        if entry is None:
             available = ", ".join(sorted(self._vision.keys()))
             raise ProviderNotFoundError(
                 f"Unknown vision provider '{name}'. Available: {available}."
             )
+        cls = self._resolve(entry)
+        self._vision[name] = cls
         return cls(config=config)
 
     # ── Listing ───────────────────────────────────────────────────────

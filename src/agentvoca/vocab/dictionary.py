@@ -164,8 +164,20 @@ class VocabularyDictionary:
             wrong: The misrecognized term (case-insensitive).
             right: The correct term to replace it with.
         """
-        self._mappings[wrong.lower()] = right
-        self.add_terms([wrong])
+        self.add_mappings([(wrong, right)])
+
+    def add_mappings(self, mappings: "list[tuple[str, str]]") -> None:
+        """Add many wrong->right mappings with a single pattern rebuild."""
+        if not mappings:
+            return
+        changed = False
+        for wrong, right in mappings:
+            self._mappings[wrong.lower()] = right
+            if wrong not in self._terms:
+                self._terms.append(wrong)
+                changed = True
+        if changed:
+            self._rebuild()
 
     def _replacement(self, match: re.Match) -> str:
         """Return the original vocabulary term or mapped term for a match."""

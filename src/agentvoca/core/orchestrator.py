@@ -303,8 +303,7 @@ class Orchestrator:
                 self._vocab.add_terms(learned_terms)
 
             learned_mappings = self._adaptive_store.get_mappings()
-            for wrong, right in learned_mappings:
-                self._vocab.add_mapping(wrong, right)
+            self._vocab.add_mappings(learned_mappings)
 
             if learned_terms or learned_mappings:
                 logger.info(
@@ -1183,8 +1182,7 @@ class Orchestrator:
                 # Re-merge any learned mappings (adaptive store may have
                 # promoted corrections since last reload).
                 if self._adaptive_store is not None:
-                    for wrong, right in self._adaptive_store.get_mappings():
-                        self._vocab.add_mapping(wrong, right)
+                    self._vocab.add_mappings(self._adaptive_store.get_mappings())
                 logger.info("Vocabulary reloaded (%d terms)", len(self._vocab.terms))
             except Exception:
                 logger.exception("Failed to reload vocabulary; keeping old one")

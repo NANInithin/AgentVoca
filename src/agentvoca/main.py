@@ -217,10 +217,15 @@ def main(argv: list[str] | None = None) -> int:
         re-registered. When the pipeline has not been built yet (a first-run
         wizard saving before ``_build_and_start_pipeline`` runs) this is a
         no-op — the pipeline is then built fresh from the saved config.
+
+        The orchestrator call is routed through the asyncio loop thread
+        (R8): the method touches async-owned state (cleanup/vocab swap,
+        HTTP-client close) and must run there, not on the Qt thread that
+        received the Qt save signal.
         """
         if orchestrator is not None:
             try:
-                orchestrator.apply_config_update(new_config)
+                loop_thread.call_soon(orchestrator.apply_config_update, new_config)
             except Exception:
                 logger.exception("Hot-apply failed; some changes may need a restart")
 

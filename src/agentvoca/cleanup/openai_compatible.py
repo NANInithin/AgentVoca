@@ -41,6 +41,32 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
         # re-read it on every rewrite(). Invalidated by mtime change.
         self._prompt_cache: tuple[float, str] | None = None
 
+        # R8: persistent HTTP client. Reused across rewrite()/warm_up() so
+        # we pay TCP+TLS once per provider lifetime, not per call. The
+        # keepalive expiry is 30s (httpx default is 5s, which would erase
+        # the reuse win between dictations).
+        self._client = self._make_client(timeout=30.0)
+
+    def _make_client(self, *, timeout: float) -> httpx.AsyncClient:
+        """Construct the shared ``httpx.AsyncClient``.
+
+        Exposed as a seam so tests can inject a ``MockTransport`` (or
+        otherwise intercept the construction) without monkey-patching
+        ``httpx.AsyncClient`` itself.
+        """
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=4,
+                max_keepalive_connections=4,
+                keepalive_expiry=30.0,
+            ),
+        )
+
+    async def shutdown(self) -> None:
+        """Close the pooled HTTP client. Safe to call more than once."""
+        await self._client.aclose()
+
     # ── v2: warm-up ──────────────────────────────────────────────────
 
     async def warm_up(self) -> None:
@@ -56,9 +82,8 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
             headers = {}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                url = f"{self._endpoint.rstrip('/')}/models"
-                await client.get(url, headers=headers)
+            url = f"{self._endpoint.rstrip('/')}/models"
+            await self._client.get(url, headers=headers, timeout=5.0)
             logger.debug("OpenAICompatibleCleanupProvider warm-up complete")
         except Exception:
             logger.debug("OpenAICompatibleCleanupProvider warm-up failed (non-fatal)")
@@ -142,19 +167,18 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
             payload.update(self._config.extra)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                url = f"{self._endpoint.rstrip('/')}/chat/completions"
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
+            url = f"{self._endpoint.rstrip('/')}/chat/completions"
+            response = await self._client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
 
-                result = response.json()
-                cleaned_text = result["choices"][0]["message"]["content"].strip()
+            result = response.json()
+            cleaned_text = result["choices"][0]["message"]["content"].strip()
 
-                if not cleaned_text and transcript:
-                    # Guardrail: never return empty if input was not empty
-                    return transcript
+            if not cleaned_text and transcript:
+                # Guardrail: never return empty if input was not empty
+                return transcript
 
-                return cleaned_text
+            return cleaned_text
 
         except httpx.HTTPError as e:
             raise CleanupError(f"LLM cleanup request failed: {e}")

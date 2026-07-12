@@ -270,6 +270,17 @@ class Orchestrator:
             self._error_timer_task.cancel()
             self._error_timer_task = None
 
+        # R8: close any provider-owned HTTP clients. Soft contract — only
+        # providers with a ``shutdown()`` method participate; base classes
+        # do not require it.
+        for provider in (self._cleanup_provider, self._vision_provider, self._asr_provider):
+            shutdown = getattr(provider, "shutdown", None)
+            if shutdown is not None:
+                try:
+                    await shutdown()
+                except Exception:
+                    logger.debug("Provider shutdown failed", exc_info=True)
+
         logger.info("Orchestrator stopped")
 
     def _init_vocab_snippets(self) -> None:
@@ -1210,7 +1221,24 @@ class Orchestrator:
             )
         ):
             try:
+                # R8: close the old provider's pooled HTTP client before
+                # dropping the reference. Soft contract — only providers
+                # with a ``shutdown()`` method participate. We may be called
+                # directly (e.g. from tests) with no running loop, in which
+                # case just skip the close — the orchestrator's eventual
+                # ``stop()`` would have caught it anyway.
+                old_provider = self._cleanup_provider
                 self._cleanup_provider = self._registry.get_cleanup(new_config.cleanup)
+                old_shutdown = getattr(old_provider, "shutdown", None)
+                if old_shutdown is not None:
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        logger.debug(
+                            "No running loop for old cleanup shutdown; skipping"
+                        )
+                    else:
+                        loop.create_task(old_shutdown())
                 if not self._cleanup_provider.is_available():
                     logger.warning(
                         "New cleanup provider '%s' reports unavailable",

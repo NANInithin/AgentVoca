@@ -40,6 +40,30 @@ class OpenAICompatibleVisionProvider(VisionProvider):
         if config.api_key_env:
             self._api_key = os.environ.get(config.api_key_env)
 
+        # R8: persistent HTTP client — reused across extract()/warm_up().
+        # VLM calls are slower, so the per-request timeout stays at 60s.
+        self._client = self._make_client(timeout=60.0)
+
+    def _make_client(self, *, timeout: float) -> httpx.AsyncClient:
+        """Construct the shared ``httpx.AsyncClient``.
+
+        Exposed as a seam so tests can inject a ``MockTransport`` (or
+        otherwise intercept the construction) without monkey-patching
+        ``httpx.AsyncClient`` itself.
+        """
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=4,
+                max_keepalive_connections=4,
+                keepalive_expiry=30.0,
+            ),
+        )
+
+    async def shutdown(self) -> None:
+        """Close the pooled HTTP client. Safe to call more than once."""
+        await self._client.aclose()
+
     async def warm_up(self) -> None:
         """Prime the HTTP connection pool with a lightweight health check.
 
@@ -52,9 +76,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             headers = {}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                url = f"{self._endpoint.rstrip('/')}/models"
-                await client.get(url, headers=headers)
+            url = f"{self._endpoint.rstrip('/')}/models"
+            await self._client.get(url, headers=headers, timeout=5.0)
             logger.debug("OpenAICompatibleVisionProvider warm-up complete")
         except Exception:
             logger.debug("OpenAICompatibleVisionProvider warm-up failed (non-fatal)")
@@ -127,16 +150,15 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             payload.update(self._config.extra)
 
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                url = f"{self._endpoint.rstrip('/')}/chat/completions"
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
+            url = f"{self._endpoint.rstrip('/')}/chat/completions"
+            response = await self._client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
 
-                result = response.json()
-                extracted = result["choices"][0]["message"]["content"]
-                if extracted is None:
-                    raise VisionError("Vision response contained no content.")
-                return extracted.strip()
+            result = response.json()
+            extracted = result["choices"][0]["message"]["content"]
+            if extracted is None:
+                raise VisionError("Vision response contained no content.")
+            return extracted.strip()
 
         except httpx.HTTPError as e:
             raise VisionError(f"Vision request failed: {e}")

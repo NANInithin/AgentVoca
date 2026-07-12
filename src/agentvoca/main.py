@@ -30,6 +30,7 @@ from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEve
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion import BUILTIN_INSERTION_STRATEGIES
+from agentvoca.insertion._executor import shutdown_input_executor
 from agentvoca.setup.controllers.config_controller import ConfigController
 from agentvoca.setup.first_run import load_state
 from agentvoca.setup.settings_window import SettingsWindow
@@ -453,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 logger.debug("Orchestrator stop did not complete cleanly", exc_info=True)
         overlay.stop()
+        shutdown_input_executor()
         loop_thread.stop()
         logger.info("Shutdown complete")
 

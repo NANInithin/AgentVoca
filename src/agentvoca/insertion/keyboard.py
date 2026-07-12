@@ -14,6 +14,7 @@ import pyautogui
 
 from agentvoca.config.schema import InsertionConfig
 from agentvoca.core.types import InsertionResult
+from agentvoca.insertion._executor import get_input_executor
 from agentvoca.insertion.base import InsertionStrategy
 from agentvoca.insertion.platform.macos import is_macos
 from agentvoca.insertion.platform.windows import focus_window, get_foreground_hwnd, is_windows
@@ -85,8 +86,8 @@ class KeyboardInsertionStrategy(InsertionStrategy):
         self._last_text = text
 
         try:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
+            await asyncio.get_running_loop().run_in_executor(
+                get_input_executor(),
                 lambda: pyautogui.typewrite(text, interval=self._type_interval),
             )
             logger.debug("Inserted %d chars via keyboard", len(text))
@@ -119,14 +120,14 @@ class KeyboardInsertionStrategy(InsertionStrategy):
         try:
             # Step 1: refocus the insertion window on Windows.
             if hwnd and is_windows():
-                await loop.run_in_executor(None, lambda: focus_window(hwnd))
+                await loop.run_in_executor(get_input_executor(), lambda: focus_window(hwnd))
                 # Brief pause so the window activation settles before we type.
                 await asyncio.sleep(0.08)
 
             # Step 2: remove the text.
             if count > 0:
                 await loop.run_in_executor(
-                    None,
+                    get_input_executor(),
                     lambda: pyautogui.press("backspace", presses=count, interval=0.0, _pause=False),
                 )
                 logger.debug("Undid %d chars via backspace", count)
@@ -134,7 +135,10 @@ class KeyboardInsertionStrategy(InsertionStrategy):
             else:
                 # Fallback: Ctrl+Z / Cmd+Z for clipboard-inserted text.
                 modifier = "command" if is_macos() else "ctrl"
-                await loop.run_in_executor(None, lambda: pyautogui.hotkey(modifier, "z"))
+                await loop.run_in_executor(
+                    get_input_executor(),
+                    lambda: pyautogui.hotkey(modifier, "z"),
+                )
                 logger.debug("Sent undo hotkey (fallback — text length unknown)")
 
             return True

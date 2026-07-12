@@ -15,6 +15,7 @@ import pyperclip
 
 from agentvoca.config.schema import InsertionConfig
 from agentvoca.core.types import InsertionResult
+from agentvoca.insertion._executor import get_input_executor
 from agentvoca.insertion.base import InsertionStrategy
 from agentvoca.insertion.platform.macos import is_macos
 
@@ -59,14 +60,17 @@ class ClipboardInsertionStrategy(InsertionStrategy):
 
         try:
             # Write to clipboard
-            await asyncio.get_event_loop().run_in_executor(None, lambda: pyperclip.copy(text))
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                get_input_executor(), lambda: pyperclip.copy(text)
+            )
             # Allow clipboard to settle
             await asyncio.sleep(0.05)
 
             # Send paste hotkey
             modifier = "command" if is_macos() else "ctrl"
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: pyautogui.hotkey(modifier, "v")
+            await asyncio.get_running_loop().run_in_executor(
+                get_input_executor(), lambda: pyautogui.hotkey(modifier, "v")
             )
 
             logger.debug("Inserted %d chars via clipboard", len(text))
@@ -88,8 +92,8 @@ class ClipboardInsertionStrategy(InsertionStrategy):
         """
         try:
             modifier = "command" if is_macos() else "ctrl"
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: pyautogui.hotkey(modifier, "z")
+            await asyncio.get_running_loop().run_in_executor(
+                get_input_executor(), lambda: pyautogui.hotkey(modifier, "z")
             )
             return True
         except Exception as exc:

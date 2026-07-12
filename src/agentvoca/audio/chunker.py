@@ -130,10 +130,18 @@ class AudioChunker:
         self._start_time_ms = 0
 
     def _get_delta(self) -> bytes:
-        """Return new audio bytes since the last emission and advance the position."""
-        pos = self._last_emit_pos
-        delta = bytes(self._buffer[pos:])
-        self._last_emit_pos = pos + len(delta)
+        """Return new audio since the last emission and compact the buffer.
+
+        ``end`` is snapshotted before the ``del``: ``add_audio`` may append from
+        the audio thread between the two statements, and deleting only
+        ``[:end]`` guarantees those new bytes survive. Both the slice-read
+        and the delete are single GIL-held bytearray operations, so no torn
+        state is possible (R5).
+        """
+        end = len(self._buffer)
+        delta = bytes(self._buffer[self._last_emit_pos:end])
+        del self._buffer[:end]
+        self._last_emit_pos = 0
         return delta
 
     async def _chunk_loop(self) -> None:

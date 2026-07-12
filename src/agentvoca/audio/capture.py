@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
+import threading
 import time
 from typing import Optional
 
@@ -72,9 +74,22 @@ class AudioCapture:
         self._record_start_time: float = 0.0
         self._last_speech_time: float = 0.0
 
-        # Async queue for delivering audio frames to the event bus
-        self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._frame_task: Optional[asyncio.Task[None]] = None
+        # ── R2: VAD worker thread scaffolding ──────────────────────────
+        # The audio callback thread must do near-zero work, so silero
+        # inference runs on a dedicated daemon thread (``agentvoca-vad``).
+        # The callback writes (audio_bytes, timestamp_ms) tuples into the
+        # thread-safe queue (drop-on-full) and reads a cached bool that
+        # the worker keeps current.  GIL keeps both the queue-put and the
+        # bool read/write atomic for our purposes.  64-deep queue bounds
+        # staleness at ~4 s in the worst case (drop-on-full fallback in
+        # the callback).
+        self._vad_queue: "queue.Queue[tuple[bytes, int] | None]" = queue.Queue(
+            maxsize=64
+        )
+        # Optimistic default so we never trigger auto-stop before the
+        # worker has produced its first result.
+        self._last_vad_speech: bool = True
+        self._vad_thread: Optional[threading.Thread] = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -107,17 +122,33 @@ class AudioCapture:
                 callback=self._audio_callback,
             )
             self._stream.start()
+
+            # R2: spawn the VAD worker thread alongside the audio stream.
+            # Inference runs here, not on the audio callback.
+            if self._vad is not None:
+                self._vad_thread = threading.Thread(
+                    target=self._vad_worker, name="agentvoca-vad", daemon=True
+                )
+                self._vad_thread.start()
+
             logger.info("Audio input stream started")
         except Exception as exc:
             raise AudioError(f"Failed to open audio input: {exc}") from exc
 
     def stop(self) -> None:
-        """Close the audio input stream."""
+        """Close the audio input stream and join the VAD worker (R2)."""
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
             self._stream = None
             logger.info("Audio input stream stopped")
+
+        if self._vad_thread is not None:
+            # Sentinel None terminates the worker's ``while True`` loop after
+            # any items already in the queue are drained (FIFO order).
+            self._vad_queue.put(None)
+            self._vad_thread.join(timeout=2.0)
+            self._vad_thread = None
 
     # ── Recording Control ──────────────────────────────────────────────
 
@@ -128,13 +159,34 @@ class AudioCapture:
         self._stop_requested = False
         self._record_start_time = time.time()
         self._last_speech_time = time.time()
+
+        # R2: drain any stale items the VAD worker hasn't consumed yet
+        # from a prior recording, and reset the cached bool to optimistic.
+        # Items the worker has already popped via Queue.get() but not yet
+        # finished processing are dropped; their effect is bounded by the
+        # queue depth and self-corrects as soon as the callback feeds the
+        # first chunk of the new dictation (~64 ms later).
+        self._last_vad_speech = True
+        while not self._vad_queue.empty():
+            try:
+                self._vad_queue.get_nowait()
+            except queue.Empty:
+                break
+
         # v2: start the streaming chunker on the persistent loop.
         if self._chunker is not None and self._loop is not None:
             self._loop.call_soon_threadsafe(self._chunker.start)
         logger.debug("Recording started")
 
     def stop_recording(self) -> None:
-        """Stop capturing audio and emit ``RecordingStoppedEvent``."""
+        """Stop capturing audio and emit ``RecordingStoppedEvent``.
+
+        Cheap (callback-safe): flips flags and schedules the buffer join
+        plus event publish on the asyncio loop thread. Falls back to
+        inline finalization when no loop was provided (tests, headless use).
+        The heavy ``b"".join(self._audio_buffer)`` runs on the loop thread
+        instead of the audio callback (R3).
+        """
         if not self._recording:
             return
         self._recording = False
@@ -145,8 +197,19 @@ class AudioCapture:
             asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=True), self._loop)
 
         duration_ms = int((time.time() - self._record_start_time) * 1000)
-        audio_bytes = b"".join(self._audio_buffer) if self._audio_buffer else b""
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._finalize_stop, duration_ms)
+        else:
+            self._finalize_stop(duration_ms)
 
+    def _finalize_stop(self, duration_ms: int) -> None:
+        """Join the buffer and publish ``RecordingStoppedEvent`` (loop thread).
+
+        Runs after the chunker-flush coroutine has been enqueued on the same
+        loop, so the AudioChunkEvent(is_flush=True) is processed before this
+        publish — same ordering as the previous inline implementation.
+        """
+        audio_bytes = b"".join(self._audio_buffer) if self._audio_buffer else b""
         self._event_bus.publish(
             RecordingStoppedEvent(
                 audio_bytes=audio_bytes,
@@ -157,14 +220,21 @@ class AudioCapture:
         logger.debug("Recording stopped (%d ms, %d bytes)", duration_ms, len(audio_bytes))
 
     def cancel_recording(self) -> None:
-        """Stop recording and discard the audio buffer."""
+        """Stop recording and discard the audio buffer.
+
+        R6: only schedule the chunker stop if we were actively recording.
+        Cancel-after-stop is harmless on this side (the buffer clear is a
+        no-op on an already-cleared list) but the orchestrator side
+        ``cancel()`` does the real work of tearing down the in-flight
+        pipeline task and resetting streaming state.
+        """
+        was_recording = self._recording
         self._recording = False
         self._stop_requested = True
         self._audio_buffer = []
-        # v2: stop the chunker WITHOUT flushing so no final segment is produced.
-        if self._chunker is not None and self._loop is not None:
+        if was_recording and self._chunker is not None and self._loop is not None:
             asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=False), self._loop)
-        logger.debug("Recording cancelled")
+        logger.debug("Recording cancelled (was_recording=%s)", was_recording)
 
     @property
     def is_recording(self) -> bool:
@@ -196,19 +266,54 @@ class AudioCapture:
         if self._chunker is not None and self._chunker.is_running:
             self._chunker.add_audio(audio_bytes)
 
-        # VAD-based silence detection for auto-stop
+        # VAD-based silence detection for auto-stop (R2: inference off-thread).
+        # The callback only enqueues the block and reads the cached bool
+        # verbatim — silero never blocks the audio thread.  Drop-on-full
+        # when the worker is behind so the callback never waits.
         if self._vad is not None and self._vad.is_available:
-            self._vad.process_chunk(audio_bytes, timestamp_ms)
-            if not self._vad.is_speech(audio_bytes):
-                # Silence detected — check timeout
+            try:
+                self._vad_queue.put_nowait((audio_bytes, timestamp_ms))
+            except queue.Full:
+                pass  # worker is behind; skipping a block is harmless
+            if self._last_vad_speech:
+                self._last_speech_time = time.time()
+            else:
                 silence_ms = int((time.time() - self._last_speech_time) * 1000)
                 if silence_ms >= self._silence_timeout_ms:
                     self.stop_recording()
-            else:
-                self._last_speech_time = time.time()
 
         # Max duration check
         elapsed_s = time.time() - self._record_start_time
         if elapsed_s >= self._max_duration_s:
             logger.info("Max recording duration reached (%d s)", self._max_duration_s)
             self.stop_recording()
+
+    # ── VAD worker thread (R2) ─────────────────────────────────────────────
+
+    def _vad_worker(self) -> None:
+        """Dedicated daemon thread: silero inference + speech-state cache update.
+
+        Exits when the audio stream closes (None sentinel from ``stop()``).
+        Subsequent chunks are pulled one at a time via ``Queue.get()``; a
+        try/except guards each inference so a single bad chunk cannot
+        terminate the loop and silently disable auto-stop.
+        """
+        while True:
+            item = self._vad_queue.get()
+            if item is None:
+                return
+            audio_bytes, timestamp_ms = item
+            if self._vad is None or not self._vad.is_available:
+                continue
+            try:
+                # process_chunk returns is_speech and publishes
+                # VADSpeechEvent on a transition (from this worker thread,
+                # which is the same cross-thread publication pattern the
+                # audio callback used previously — EventBus handles it).
+                self._last_vad_speech = self._vad.process_chunk(
+                    audio_bytes, timestamp_ms
+                )
+            except Exception:
+                logger.debug("VAD worker inference failed", exc_info=True)
+                # Fail open, same fallback behaviour VAD.is_speech uses.
+                self._last_vad_speech = True

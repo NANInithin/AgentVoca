@@ -114,15 +114,27 @@ class VAD:
             logger.warning("VAD inference failed: %s", exc)
             return True  # Default to speech on error
 
-    def process_chunk(self, audio_chunk: bytes, timestamp_ms: int) -> None:
-        """Process an audio chunk and emit VADSpeechEvent on state change.
+    def emit_transition(self, is_speech: bool, timestamp_ms: int) -> None:
+        """Publish ``VADSpeechEvent`` when the speech state flips.
+
+        Args:
+            is_speech: The current speech state to compare against the last known.
+            timestamp_ms: Timestamp of the audio chunk in milliseconds.
+        """
+        if self._last_speech_state is None or self._last_speech_state != is_speech:
+            self._last_speech_state = is_speech
+            self._event_bus.publish(VADSpeechEvent(is_speech=is_speech, timestamp_ms=timestamp_ms))
+
+    def process_chunk(self, audio_chunk: bytes, timestamp_ms: int) -> bool:
+        """Run inference once and emit a transition event.
 
         Args:
             audio_chunk: Raw PCM mono audio bytes at 16kHz.
             timestamp_ms: Timestamp of the chunk in milliseconds.
+
+        Returns:
+            True if speech is detected, False if only silence.
         """
         is_speech = self.is_speech(audio_chunk)
-
-        if self._last_speech_state is None or self._last_speech_state != is_speech:
-            self._last_speech_state = is_speech
-            self._event_bus.publish(VADSpeechEvent(is_speech=is_speech, timestamp_ms=timestamp_ms))
+        self.emit_transition(is_speech, timestamp_ms)
+        return is_speech

@@ -349,6 +349,29 @@ class FasterWhisperProvider(ASRProvider):
 
     # ── v2 streaming ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _window_snapshot(
+        buffer: bytearray, window_s: int, sample_rate: int
+    ) -> np.ndarray:
+        """Copy the last ``window_s`` seconds out of ``buffer`` with one allocation.
+
+        A memoryview slice avoids copying the whole buffer. The ``with``
+        block releases the buffer export even if ``copy()`` raises; ``del
+        view`` is still required so numpy drops its reference to the
+        exported buffer before the context manager exits. As long as this
+        function returns, the bytearray is fully unlocked and the caller's
+        next ``buffer.extend(...)`` cannot raise ``BufferError``.
+        """
+        with memoryview(buffer) as mv:
+            if window_s > 0:
+                window_bytes = window_s * sample_rate * 4  # float32
+                if len(mv) > window_bytes:
+                    mv = mv[-window_bytes:]
+            view = np.frombuffer(mv, dtype=np.float32)
+            snapshot = view.copy()
+            del view
+        return snapshot
+
     async def stream_transcribe(
         self,
         audio_stream: AsyncIterator[bytes],
@@ -403,13 +426,6 @@ class FasterWhisperProvider(ASRProvider):
             if len(full_buffer) < min_partial_bytes:
                 continue
 
-            # Build the rolling window
-            audio_array = np.frombuffer(bytes(full_buffer), dtype=np.float32)
-            if window_s > 0:
-                window_samples = window_s * sample_rate
-                if len(audio_array) > window_samples:
-                    audio_array = audio_array[-window_samples:]
-
             # Yield any completed partial result (non-blocking check)
             if _partial_fut is not None and _partial_fut.done():
                 try:
@@ -426,9 +442,12 @@ class FasterWhisperProvider(ASRProvider):
                     pass
                 _partial_fut = None
 
-            # Start a new partial only when no other is running
+            # Start a new partial only when no other is running.
+            # The window snapshot is materialized here, exactly once per
+            # partial — avoiding the previous O(N²) `bytes(full_buffer)` copy
+            # every 500 ms iteration.
             if _partial_fut is None:
-                snapshot = audio_array.copy()
+                snapshot = self._window_snapshot(full_buffer, window_s, sample_rate)
                 lang = context.language_hint if context else self._config.language_hint
                 _partial_fut = loop.run_in_executor(
                     None,

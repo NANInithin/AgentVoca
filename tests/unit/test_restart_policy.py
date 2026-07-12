@@ -79,6 +79,27 @@ def test_partition_defaults_unknown_to_restart():
     assert "unknown.field" not in hot
 
 
+def test_list_index_subpaths_inherit_the_parent_fields_classification():
+    """Regression: _diff_paths (config_controller.py) yields per-index paths
+    like "vocabulary.inline.1" alongside the parent "vocabulary.inline" when
+    an existing list entry changes. Those index paths are not enumerated
+    verbatim in _HOT_FIELDS/_RESTART_FIELDS, so they must be classified by
+    walking up to their nearest known prefix instead of defaulting to
+    restart — otherwise every edit to an existing vocab term, command
+    phrase, context profile, or vision anchor phrase would spuriously show
+    a "restart required" banner.
+    """
+    assert is_hot_field("vocabulary.inline.1")
+    assert not is_restart_field("vocabulary.inline.1")
+    assert is_hot_field("context.profiles.0.name")
+    assert is_hot_field("commands.phrases.2")
+    assert is_hot_field("vision.anchor_phrases.0")
+
+    hot, restart = partition(["vocabulary.inline", "vocabulary.inline.1"])
+    assert hot == ["vocabulary.inline", "vocabulary.inline.1"]
+    assert restart == []
+
+
 def test_all_known_paths_cover_every_field():
     hot, restart = all_known_paths()
     assert "asr.provider" in restart

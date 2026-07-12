@@ -88,31 +88,37 @@ class ScreenshotCapturer:
         thread.start()
 
     def _run_capture(self) -> None:
-        """Worker body: perform the snip, store bytes, publish an event."""
+        """Worker body: perform the snip, store bytes, publish an event.
+
+        The capture event is published *before* ``_in_flight`` is decremented
+        and waiters are notified, so ``wait_idle`` is a reliable barrier: once
+        it returns, both the stored screenshot and its published event are
+        guaranteed visible. The ``_in_flight`` bookkeeping is in a ``finally``
+        so a failing handler can never leave a waiter stuck.
+        """
         try:
             data = self._capture_bytes()
         except Exception:
             logger.debug("Screenshot capture failed", exc_info=True)
             data = None
 
-        index: Optional[int] = None
-        width = height = None
-        with self._lock:
+        try:
             if data:
-                index = len(self._screenshots)
-                self._screenshots.append(data)
-                width, height = _png_dimensions(data)
-            self._in_flight -= 1
-            if self._in_flight <= 0:
-                self._idle.notify_all()
-
-        if index is not None:
-            logger.info("Screenshot captured (index=%d, %d bytes)", index, len(data or b""))
-            self._event_bus.publish(
-                ScreenshotCapturedEvent(index=index, width=width, height=height)
-            )
-        else:
-            logger.info("Screenshot capture cancelled or produced no image")
+                with self._lock:
+                    index = len(self._screenshots)
+                    self._screenshots.append(data)
+                    width, height = _png_dimensions(data)
+                logger.info("Screenshot captured (index=%d, %d bytes)", index, len(data))
+                self._event_bus.publish(
+                    ScreenshotCapturedEvent(index=index, width=width, height=height)
+                )
+            else:
+                logger.info("Screenshot capture cancelled or produced no image")
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+                if self._in_flight <= 0:
+                    self._idle.notify_all()
 
     # ── Draining / synchronisation ─────────────────────────────────────
 

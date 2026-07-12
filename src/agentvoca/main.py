@@ -22,7 +22,7 @@ from agentvoca.audio.capture import AudioCapture
 from agentvoca.audio.chunker import AudioChunker
 from agentvoca.capture.screenshot import ScreenshotCapturer
 from agentvoca.cleanup import BUILTIN_CLEANUP_PROVIDERS
-from agentvoca.config.loader import load_config
+from agentvoca.config.loader import load_config_lenient
 from agentvoca.config.schema import ASRConfig, FullConfig
 from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
@@ -30,7 +30,7 @@ from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEve
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion import BUILTIN_INSERTION_STRATEGIES
-from agentvoca.setup.controllers.config_controller import load_controller
+from agentvoca.setup.controllers.config_controller import ConfigController
 from agentvoca.setup.first_run import load_state
 from agentvoca.setup.settings_window import SettingsWindow
 from agentvoca.setup.wizard import SetupWizard
@@ -74,7 +74,30 @@ def _build_registry() -> ProviderRegistry:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse arguments, load config, and start the application."""
+    """Parse arguments, load config, and start the application.
+
+    Startup order (v0.3.5):
+
+    1. Parse CLI args and set up logging.
+    2. Load the YAML config via the *lenient* loader. A previously-saved
+       config that references an unset API-key env var does not crash the
+       app; we surface a warning dialog and continue. Remember whether this
+       is a genuine first run (no config file yet).
+    3. Build the Qt app, event bus, async loop, registry, tray + overlay,
+       and wire up the wizard/settings/hotkey callbacks — but *not* the
+       config-dependent pipeline yet.
+    4. First-run gate: if there is no config file, open the wizard modally
+       and wait. This is the key ordering guarantee — the heavy pipeline
+       (ASR provider, audio device, model warm-up) is built only *after*
+       the user has chosen a provider, so picking a cloud provider never
+       triggers a local Whisper model download/load. On subsequent launches
+       we skip straight to building the pipeline (and only surface a
+       lenient-load warning if the existing config was not fully valid).
+    5. Build + start the pipeline from the effective config: providers,
+       audio device, orchestrator warm-up, hotkeys.
+    6. On non-first-run launches, auto-open the wizard non-blocking (unless
+       the user opted out), then enter the Qt main loop.
+    """
     parser = argparse.ArgumentParser(
         prog="agentvoca",
         description="A developer-first, model-agnostic voice dictation desktop app.",
@@ -103,29 +126,39 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Config ───────────────────────────────────────────────────────
     config_path = Path(args.config).expanduser().resolve() if args.config else _DEFAULT_CONFIG_PATH
-
-    try:
-        if config_path.is_file():
-            config = load_config(config_path)
+    # Captured before anything can create the file. On a genuine first run we
+    # defer building/starting the pipeline until the user has completed the
+    # wizard, so we never load a local ASR model they are about to replace
+    # with a cloud provider (see the first-run gate near the bottom).
+    is_first_run = not config_path.is_file()
+    startup_config_warning: str | None = None
+    if config_path.is_file():
+        try:
+            config, startup_config_warning = load_config_lenient(config_path)
             logger.info("Loaded config from %s", config_path)
-        else:
-            logger.warning(
-                "Config file not found at %s. Using defaults (faster_whisper base model).",
-                config_path,
-            )
-            # Default to the 'base' model so faster-whisper has a model to load
-            config = FullConfig(asr=ASRConfig(provider="faster_whisper", model="base"))
-    except ConfigError as exc:
-        logger.error("Config error: %s", exc)
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 1
+        except ConfigError as exc:
+            logger.error("Config error: %s", exc)
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        logger.warning(
+            "Config file not found at %s. Using defaults (faster_whisper base model).",
+            config_path,
+        )
+        # Default to the 'base' model so faster-whisper has a model to load
+        config = FullConfig(asr=ASRConfig(provider="faster_whisper", model="base"))
+
+    if startup_config_warning:
+        logger.warning("Config loaded with warnings: %s", startup_config_warning)
 
     # ── Config controller (v0.3.5 setup wizard / settings) ───────────
     # The wizard and tabbed settings window both go through a single
     # ConfigController that owns an in-memory draft + save semantics.
-    controller = load_controller(config_path)
-    if not config_path.is_file():
-        controller.replace_draft(config)
+    # Seed it with the config we already loaded *leniently* above rather
+    # than re-reading the file strictly — a config with a missing API-key
+    # env var (e.g. an OPENROUTER_API_KEY unset since the last session)
+    # must reach the wizard so the user can fix it, not crash startup.
+    controller = ConfigController(config_path=config_path, initial=config)
 
     # ── Qt Application ───────────────────────────────────────────────
     app = QtWidgets.QApplication(sys.argv)
@@ -144,146 +177,24 @@ def main(argv: list[str] | None = None) -> int:
 
     registry = _build_registry()
 
-    # ── v3: screenshot capture (only when vision is enabled) ──────────
+    # ── Config-dependent handles (built after the first-run gate) ─────
+    # These are populated by ``_build_and_start_pipeline`` once the effective
+    # config is known. On a first run that means *after* the wizard, so a
+    # user who picks a cloud provider never triggers a local model load.
     screenshot_capturer: ScreenshotCapturer | None = None
-    if config.vision.enabled:
-        screenshot_capturer = ScreenshotCapturer(
-            event_bus=event_bus,
-            capture_timeout_s=config.vision.capture_timeout_s,
-        )
-        if not screenshot_capturer.is_available():
-            logger.warning(
-                "Vision enabled but no native screenshot tool was found on this platform"
-            )
+    orchestrator: Orchestrator | None = None
+    audio: AudioCapture | None = None
+    chunker: AudioChunker | None = None
+    hotkeys: HotkeyManager | None = None
 
-    orchestrator = Orchestrator(
-        config=config,
-        registry=registry,
-        event_bus=event_bus,
-        screenshot_capturer=screenshot_capturer,
-    )
-
-    # ── UI ────────────────────────────────────────────────────────────
-    settings_window: SettingsWindow | None = None
-    wizard: SetupWizard | None = None
-
-    def _reload_hot_components(new_config: FullConfig) -> None:
-        """Hot-apply everything we can from a freshly-saved config.
-
-        Called after the user saves from the wizard or settings window. Hot
-        fields are pushed into the orchestrator; hotkeys are unregistered and
-        re-registered; restart-only fields are surfaced via a notification
-        so the user knows to relaunch.
-        """
-        # Hot-apply providers / vocab / snippets / etc.
-        try:
-            orchestrator.apply_config_update(new_config)
-        except Exception:
-            logger.exception("Hot-apply failed; some changes may need a restart")
-
-        # Re-register hotkeys (they may have changed).
-        try:
-            hotkeys.unregister_all()
-            _register_hotkeys(hotkeys, new_config)
-            logger.info("Hotkeys re-registered")
-        except Exception:
-            logger.exception("Failed to re-register hotkeys")
-
-    def open_settings() -> None:
-        nonlocal settings_window
-        settings_window = SettingsWindow(controller)
-        settings_window.config_saved.connect(_reload_hot_components)
-        settings_window.show()
-        settings_window.raise_()
-        settings_window.activateWindow()
-
-    def open_wizard() -> None:
-        nonlocal wizard
-        wizard = SetupWizard(controller)
-        wizard.show()
-        wizard.raise_()
-        wizard.activateWindow()
-
+    # ── UI scaffolding (tray, overlay) ───────────────────────────────
+    # Built up front so the user has a UI surface immediately, even before
+    # the heavy pipeline exists.
     overlay = StatusOverlay(event_bus)
 
     tray = TrayApp(event_bus)
-    tray.open_settings_action.triggered.connect(open_settings)
-    tray.open_wizard_action.triggered.connect(open_wizard)
-    tray.quit_action.triggered.connect(app.quit)
-
-    # ── Error notifications ───────────────────────────────────────────
-    def on_error(event: object) -> None:
-        message = getattr(event, "message", "Unknown error")
-        stage = getattr(event, "stage", "unknown")
-        recoverable = getattr(event, "recoverable", False)
-        logger.error("Pipeline error [%s]: %s (recoverable=%s)", stage, message, recoverable)
-        if not recoverable:
-            tray.show_message("agentvoca Error", f"Error in {stage}: {message}", icon=2)
-
-    event_bus.subscribe(ErrorEvent, on_error)
-
-    # ── v3: screenshot capture feedback ───────────────────────────────
-    if screenshot_capturer is not None:
-
-        def on_screenshot(event: object) -> None:
-            index = getattr(event, "index", 0)
-            logger.info("Screenshot %d captured for the current dictation", index + 1)
-            tray.show_message(
-                "agentvoca",
-                f"Screenshot {index + 1} captured — keep dictating.",
-                icon=1,
-            )
-
-        event_bus.subscribe(ScreenshotCapturedEvent, on_screenshot)
-
-    # ── Audio capture ─────────────────────────────────────────────────
-    # Build the streaming chunker only when streaming is enabled; otherwise
-    # the v1 batch path is used unchanged.
-    chunker: AudioChunker | None = None
-    if config.asr.streaming:
-        chunker = AudioChunker(
-            event_bus=event_bus,
-            chunk_ms=config.asr.streaming_chunk_ms,
-            window_s=config.asr.streaming_window_s,
-            sample_rate=config.audio.sample_rate,
-        )
-        logger.info(
-            "Streaming enabled (chunk_ms=%d, window_s=%d)",
-            config.asr.streaming_chunk_ms,
-            config.asr.streaming_window_s,
-        )
-
-    audio = AudioCapture(
-        event_bus=event_bus,
-        sample_rate=config.audio.sample_rate,
-        channels=config.audio.channels,
-        device_name=config.audio.input_device,
-        silence_timeout_ms=config.audio.silence_timeout_ms,
-        max_duration_s=config.audio.max_recording_duration_s,
-        chunker=chunker,
-        loop=loop_thread.loop,
-    )
-    try:
-        audio.start()
-        logger.info("Audio input opened")
-    except AudioError as exc:
-        logger.error("Failed to open audio input: %s", exc)
-        return 1
-
-    # ── Orchestrator startup ──────────────────────────────────────────
-    # Run start() on the persistent loop and block until it returns. The
-    # background warm-up task it spawns keeps running on that loop afterwards.
-    try:
-        loop_thread.submit(orchestrator.start()).result()
-        logger.info("Orchestrator ready")
-    except AgentVocaError as exc:
-        logger.critical("Failed to start orchestrator: %s", exc)
-        audio.stop()
-        loop_thread.stop()
-        return 1
-
-    # ── Hotkeys ───────────────────────────────────────────────────────
-    hotkeys = HotkeyManager(event_bus)
+    settings_window: SettingsWindow | None = None
+    wizard: SetupWizard | None = None
 
     def _register_hotkeys(manager: HotkeyManager, cfg: FullConfig) -> None:
         """Bind every configured hotkey on ``manager``."""
@@ -297,11 +208,66 @@ def main(argv: list[str] | None = None) -> int:
         if cfg.vision.enabled and cfg.hotkeys.capture_screenshot:
             manager.register(cfg.hotkeys.capture_screenshot, "capture_screenshot")
 
-    _register_hotkeys(hotkeys, config)
+    def _reload_hot_components(new_config: FullConfig) -> None:
+        """Hot-apply everything we can from a freshly-saved config.
+
+        Called after the user saves from the wizard or settings window. Hot
+        fields are pushed into the orchestrator; hotkeys are unregistered and
+        re-registered. When the pipeline has not been built yet (a first-run
+        wizard saving before ``_build_and_start_pipeline`` runs) this is a
+        no-op — the pipeline is then built fresh from the saved config.
+        """
+        if orchestrator is not None:
+            try:
+                orchestrator.apply_config_update(new_config)
+            except Exception:
+                logger.exception("Hot-apply failed; some changes may need a restart")
+
+        if hotkeys is not None:
+            try:
+                hotkeys.unregister_all()
+                _register_hotkeys(hotkeys, new_config)
+                logger.info("Hotkeys re-registered")
+            except Exception:
+                logger.exception("Failed to re-register hotkeys")
+
+    def open_settings() -> None:
+        nonlocal settings_window
+        settings_window = SettingsWindow(controller)
+        settings_window.config_saved.connect(_reload_hot_components)
+        settings_window.show()
+        settings_window.raise_()
+        settings_window.activateWindow()
+
+    def open_wizard() -> None:
+        nonlocal wizard
+        wizard = SetupWizard(controller)
+        wizard.config_saved.connect(_reload_hot_components)
+        wizard.show()
+        wizard.raise_()
+        wizard.activateWindow()
+
+    tray.open_settings_action.triggered.connect(open_settings)
+    tray.open_wizard_action.triggered.connect(open_wizard)
+    tray.quit_action.triggered.connect(app.quit)
+
+    def on_error(event: object) -> None:
+        message = getattr(event, "message", "Unknown error")
+        stage = getattr(event, "stage", "unknown")
+        recoverable = getattr(event, "recoverable", False)
+        logger.error("Pipeline error [%s]: %s (recoverable=%s)", stage, message, recoverable)
+        if not recoverable:
+            tray.show_message("agentvoca Error", f"Error in {stage}: {message}", icon=2)
+
+    event_bus.subscribe(ErrorEvent, on_error)
 
     def on_hotkey(event: object) -> None:
         from agentvoca.core.events import StateChangedEvent  # noqa: PLC0415
 
+        # Hotkeys are only started after the pipeline is built, so audio and
+        # orchestrator are non-None whenever this fires.
+        if audio is None or orchestrator is None:
+            return
         action = getattr(event, "action", None)
         if action == "toggle_recording":
             if audio.is_recording:
@@ -331,16 +297,137 @@ def main(argv: list[str] | None = None) -> int:
                 logger.debug("Screenshot hotkey ignored (not recording)")
 
     event_bus.subscribe(HotkeyEvent, on_hotkey)
-    hotkeys.start()
-    logger.info("Hotkeys active — press %s to record", config.hotkeys.toggle_recording)
 
-    # ── v0.3.5: auto-open setup wizard on every launch ─────────────────
+    def _build_and_start_pipeline(cfg: FullConfig) -> bool:
+        """Build the config-dependent pipeline and start it.
+
+        This is where the heavy work happens: constructing the ASR/cleanup
+        providers, opening the audio device, and kicking off model warm-up.
+        It runs only after the effective config is known (after the first-run
+        wizard, if any), so a cloud provider never triggers a local model
+        load. Returns True on success, False if audio or the orchestrator
+        failed to start.
+        """
+        nonlocal screenshot_capturer, orchestrator, audio, chunker, hotkeys
+
+        # v3: screenshot capture (only when vision is enabled)
+        if cfg.vision.enabled:
+            screenshot_capturer = ScreenshotCapturer(
+                event_bus=event_bus,
+                capture_timeout_s=cfg.vision.capture_timeout_s,
+            )
+            if not screenshot_capturer.is_available():
+                logger.warning(
+                    "Vision enabled but no native screenshot tool was found on this platform"
+                )
+
+            def on_screenshot(event: object) -> None:
+                index = getattr(event, "index", 0)
+                logger.info("Screenshot %d captured for the current dictation", index + 1)
+                tray.show_message(
+                    "agentvoca",
+                    f"Screenshot {index + 1} captured — keep dictating.",
+                    icon=1,
+                )
+
+            event_bus.subscribe(ScreenshotCapturedEvent, on_screenshot)
+
+        orchestrator = Orchestrator(
+            config=cfg,
+            registry=registry,
+            event_bus=event_bus,
+            screenshot_capturer=screenshot_capturer,
+        )
+
+        # Audio capture (light: just opens a sounddevice stream).
+        if cfg.asr.streaming:
+            chunker = AudioChunker(
+                event_bus=event_bus,
+                chunk_ms=cfg.asr.streaming_chunk_ms,
+                window_s=cfg.asr.streaming_window_s,
+                sample_rate=cfg.audio.sample_rate,
+            )
+            logger.info(
+                "Streaming enabled (chunk_ms=%d, window_s=%d)",
+                cfg.asr.streaming_chunk_ms,
+                cfg.asr.streaming_window_s,
+            )
+
+        audio = AudioCapture(
+            event_bus=event_bus,
+            sample_rate=cfg.audio.sample_rate,
+            channels=cfg.audio.channels,
+            device_name=cfg.audio.input_device,
+            silence_timeout_ms=cfg.audio.silence_timeout_ms,
+            max_duration_s=cfg.audio.max_recording_duration_s,
+            chunker=chunker,
+            loop=loop_thread.loop,
+        )
+        try:
+            audio.start()
+            logger.info("Audio input opened")
+        except AudioError as exc:
+            logger.error("Failed to open audio input: %s", exc)
+            return False
+
+        # Orchestrator startup (kicks off model warm-up).
+        try:
+            loop_thread.submit(orchestrator.start()).result()
+            logger.info("Orchestrator ready")
+        except AgentVocaError as exc:
+            logger.critical("Failed to start orchestrator: %s", exc)
+            audio.stop()
+            return False
+
+        # Hotkeys.
+        hotkeys = HotkeyManager(event_bus)
+        _register_hotkeys(hotkeys, cfg)
+        hotkeys.start()
+        logger.info("Hotkeys active — press %s to record", cfg.hotkeys.toggle_recording)
+        return True
+
+    # ── First-run gate ────────────────────────────────────────────────
+    # On a genuine first run, open the wizard *modally* before building the
+    # pipeline. This guarantees we do not load a local ASR model the user is
+    # about to replace with a cloud provider. On subsequent launches the
+    # config already reflects the user's choice, so we build immediately and
+    # only surface a lenient-load warning / auto-open the wizard afterwards.
     state = load_state()
-    if state.wizard_auto_open:
+    if is_first_run:
+        logger.info("First run detected — opening setup wizard before starting the pipeline")
+        first_run_wizard = SetupWizard(controller)
+        first_run_wizard.config_saved.connect(_reload_hot_components)
+        first_run_wizard.exec()
+        # Use whatever the user ended with — the saved config if they clicked
+        # Save, or the untouched default if they cancelled setup.
+        config = controller.draft
+    elif startup_config_warning:
+        # Existing but not-fully-valid config (e.g. a remote provider whose
+        # API-key env var is unset). Open the wizard *modally* with an in-wizard
+        # banner explaining the problem, before building the pipeline — so the
+        # user can fix or replace the config first, and we never warm up a model
+        # under a config they are about to change. This replaces the old
+        # standalone "Config needs attention" message box.
+        logger.info("Config loaded with warnings — opening setup wizard to fix it")
+        fix_wizard = SetupWizard(controller, startup_warning=startup_config_warning)
+        fix_wizard.config_saved.connect(_reload_hot_components)
+        fix_wizard.exec()
+        # Build from whatever the user ended with: the corrected config if they
+        # saved, or the untouched lenient config if they cancelled.
+        config = controller.draft
+
+    if not _build_and_start_pipeline(config):
+        loop_thread.stop()
+        return 1
+
+    # On normal non-first-run launches, auto-open the wizard non-blocking (if
+    # the user has not opted out). Skipped when we already showed a modal wizard
+    # above (first run, or the broken-config fix flow) so it never opens twice.
+    if not is_first_run and not startup_config_warning and state.wizard_auto_open:
         wizard = SetupWizard(controller)
         wizard.config_saved.connect(_reload_hot_components)
-        # Make the wizard non-blocking so the tray + hotkey are still
-        # usable while the user reviews settings.
+        # Non-blocking so the tray + hotkey are still usable while the
+        # user reviews settings.
         wizard.show()
         logger.info("Setup wizard shown on startup (auto-open enabled)")
 
@@ -356,12 +443,15 @@ def main(argv: list[str] | None = None) -> int:
             wizard.close()
         if settings_window is not None:
             settings_window.close()
-        hotkeys.stop()
-        audio.stop()
-        try:
-            loop_thread.submit(orchestrator.stop()).result(timeout=3.0)
-        except Exception:
-            logger.debug("Orchestrator stop did not complete cleanly", exc_info=True)
+        if hotkeys is not None:
+            hotkeys.stop()
+        if audio is not None:
+            audio.stop()
+        if orchestrator is not None:
+            try:
+                loop_thread.submit(orchestrator.stop()).result(timeout=3.0)
+            except Exception:
+                logger.debug("Orchestrator stop did not complete cleanly", exc_info=True)
         overlay.stop()
         loop_thread.stop()
         logger.info("Shutdown complete")

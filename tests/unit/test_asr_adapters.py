@@ -54,6 +54,11 @@ async def test_faster_whisper_transcribe(fw_config):
         mock_model.transcribe.assert_called_once()
 
 
+# One second of silent float32 PCM at 16 kHz — the exact shape the audio
+# pipeline hands the provider (what faster-whisper reads via np.frombuffer).
+_PCM_F32 = b"\x00" * 16000 * 4
+
+
 @pytest.mark.asyncio
 async def test_openai_asr_transcribe(openai_config, monkeypatch):
     """Test OpenAICompatibleASRProvider transcription with mock httpx."""
@@ -68,12 +73,38 @@ async def test_openai_asr_transcribe(openai_config, monkeypatch):
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = mock_response
 
-        result = await provider.transcribe_audio(b"audio data", 16000)
+        result = await provider.transcribe_audio(_PCM_F32, 16000)
 
         assert result.text == "Hello from API"
         assert result.is_final is True
         assert result.language_detected == "en"
         mock_post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_openai_asr_uploads_a_real_wav_file(openai_config, monkeypatch):
+    """Regression: raw PCM must be wrapped in a valid WAV before upload.
+
+    Previously the headerless float32 PCM was uploaded labelled ``audio.wav``,
+    which every Whisper-compatible endpoint rejects with 400. The uploaded
+    bytes must now start with the RIFF/WAVE magic.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    provider = OpenAICompatibleASRProvider(openai_config)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"text": "ok"}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        await provider.transcribe_audio(_PCM_F32, 16000)
+
+    files = mock_post.call_args.kwargs["files"]
+    _name, uploaded_bytes, _mime = files["file"]
+    assert uploaded_bytes[:4] == b"RIFF", "upload is not a WAV container"
+    assert uploaded_bytes[8:12] == b"WAVE", "upload is missing the WAVE tag"
 
 
 @pytest.mark.asyncio
@@ -86,8 +117,33 @@ async def test_openai_asr_failure(openai_config, monkeypatch):
         mock_post.side_effect = httpx.HTTPError("API Error")
 
         with pytest.raises(ASRError) as exc:
-            await provider.transcribe_audio(b"audio data", 16000)
+            await provider.transcribe_audio(_PCM_F32, 16000)
         assert "OpenAI-compatible ASR request failed" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_openai_asr_surfaces_provider_error_body(openai_config, monkeypatch):
+    """A 4xx must include the provider's response body for diagnosis."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    provider = OpenAICompatibleASRProvider(openai_config)
+
+    error_response = MagicMock()
+    error_response.status_code = 400
+    error_response.text = '{"error": "audio file could not be decoded"}'
+
+    def _raise():
+        raise httpx.HTTPStatusError("400", request=MagicMock(), response=error_response)
+
+    error_response.raise_for_status = _raise
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = error_response
+
+        with pytest.raises(ASRError) as exc:
+            await provider.transcribe_audio(_PCM_F32, 16000)
+        msg = str(exc.value)
+        assert "400" in msg
+        assert "could not be decoded" in msg
 
 
 @pytest.mark.asyncio

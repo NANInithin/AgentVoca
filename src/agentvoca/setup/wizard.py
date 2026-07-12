@@ -66,6 +66,7 @@ class SetupWizard(QtWidgets.QWizard):
         self,
         controller: "ConfigController",
         parent: QtWidgets.QWidget | None = None,
+        startup_warning: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._controller = controller
@@ -76,8 +77,11 @@ class SetupWizard(QtWidgets.QWizard):
         self.setOption(QtWidgets.QWizard.WizardOption.NoCancelButton, False)
         self.resize(720, 600)
 
+        welcome = WelcomePage(controller)
+        if startup_warning:
+            welcome.show_startup_warning(startup_warning)
         self._pages = [
-            WelcomePage(controller),
+            welcome,
             AppBasicsPage(controller),
             AudioPage(controller),
             AsrPage(controller),
@@ -87,17 +91,27 @@ class SetupWizard(QtWidgets.QWizard):
             AdvancedPage(controller),
             FinishPage(controller),
         ]
+        # Parallel list of QWizardPage wrappers so we can map wizard-id back
+        # to the underlying ConfigPage index when handling navigation.
+        self._wizard_pages: list[QtWidgets.QWizardPage] = []
         for page in self._pages:
-            self.addPage(_as_wizard_page(page))
+            wrapper = _as_wizard_page(page)
+            self._wizard_pages.append(wrapper)
+            self.addPage(wrapper)
 
         self.setButtonText(QtWidgets.QWizard.WizardButton.NextButton, "Next →")
         self.setButtonText(QtWidgets.QWizard.WizardButton.BackButton, "← Back")
         self.setButtonText(QtWidgets.QWizard.WizardButton.FinishButton, "Save")
         self.setButtonText(QtWidgets.QWizard.WizardButton.CancelButton, "Cancel")
 
-        # Reload every page's UI from the controller each time it becomes the
-        # current page. This makes "Back" re-bind values even when the user
-        # changed them in the Settings window mid-wizard.
+        # Track the page the user is leaving so we can capture its UI state
+        # into the controller before rebinding. Without this, every "Next"
+        # would rebind every page from the controller's draft, clobbering
+        # values the user just typed but has not yet saved.
+        # ``_current_id`` starts at -1 (no page shown yet) and is updated
+        # in lock-step with QWizard's own currentId so we always know which
+        # page is being left on every navigation.
+        self._current_id: int = -1
         self.currentIdChanged.connect(self._on_current_changed)
 
     # ── Qt overrides ───────────────────────────────────────────────────
@@ -105,6 +119,13 @@ class SetupWizard(QtWidgets.QWizard):
     def done(self, result: int) -> None:
         """Save when the user clicks Finish; cancel cleanly otherwise."""
         if result == QtWidgets.QWizard.DialogCode.Accepted:
+            # 1. Push every page's UI into the controller draft *first*.
+            # Without this, the wizard would persist whatever was loaded
+            # from disk and silently drop everything the user just typed.
+            for page in self._pages:
+                page.save_to_controller()
+
+            # 2. Validate + persist via the shared controller path.
             save_result = self._controller.save()
             if save_result.success:
                 mark_first_run_complete(__version__)
@@ -132,7 +153,56 @@ class SetupWizard(QtWidgets.QWizard):
 
     # ── Internal ───────────────────────────────────────────────────────
 
-    def _on_current_changed(self, _new_id: int) -> None:
-        # Re-bind the controller on the underlying ConfigPage when navigating.
+    def _on_current_changed(self, new_id: int) -> None:
+        # Skip the rebind while the wizard is closing. ``result()`` is
+        # non-zero once the user has accepted/rejected, and QWizard fires
+        # currentIdChanged during teardown — we must not overwrite the
+        # just-saved draft (or any unsaved user input) at that point.
+        if self.result() != 0:
+            return
+
+        # 1. Capture the page we're leaving: push its UI into the controller
+        #    so its values survive the navigation. This is what fixes the
+        #    "Next clobbers my typed values" bug. ``self._current_id`` was
+        #    the last page id we saw, set either by us (initial -1) or by
+        #    a prior invocation of this slot.
+        if self._current_id != -1 and self._current_id != new_id:
+            leaving_index = self._page_index_for_id(self._current_id)
+            if leaving_index is not None and 0 <= leaving_index < len(self._pages):
+                try:
+                    self._pages[leaving_index].save_to_controller()
+                except Exception:
+                    logger.exception(
+                        "Failed to capture state from page %d on navigation",
+                        leaving_index,
+                    )
+
+        # 2. Rebind the page we're arriving at from the controller. We only
+        #    rebind the *new* page, not every page, so typed-but-unsaved
+        #    values on other pages are preserved. The full rebind still
+        #    happens in ``_refresh_all`` if/when something external (e.g.
+        #    the settings window) demands a global resync.
+        if new_id != -1 and new_id != self._current_id:
+            new_index = self._page_index_for_id(new_id)
+            if new_index is not None and 0 <= new_index < len(self._pages):
+                try:
+                    self._pages[new_index].load_from_controller()
+                except Exception:
+                    logger.exception("Failed to rebind page %d on navigation", new_index)
+
+        self._current_id = new_id
+
+    def _page_index_for_id(self, wizard_id: int) -> int | None:
+        """Map a ``QWizard`` page id to the index in ``self._pages``."""
+        for idx, wrapper in enumerate(self._wizard_pages):
+            if wrapper is self.page(wizard_id):
+                return idx
+        return None
+
+    def _refresh_all(self) -> None:
+        """Force a full rebind of every page. Used after external controller mutations."""
         for page_widget in self._pages:
-            page_widget.load_from_controller()
+            try:
+                page_widget.load_from_controller()
+            except Exception:
+                logger.exception("Failed to rebind page during full refresh")

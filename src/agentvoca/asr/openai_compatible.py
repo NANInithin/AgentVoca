@@ -3,15 +3,52 @@
 Sends audio to any OpenAI-compatible /v1/audio/transcriptions endpoint.
 """
 
+import io
+import logging
 import os
+import wave
 from typing import AsyncIterator, Optional
 
 import httpx
+import numpy as np
 
 from agentvoca.asr.base import ASRProvider
 from agentvoca.config.schema import ASRConfig
 from agentvoca.core.types import ASRContext, TranscriptSegment
 from agentvoca.utils.errors import ASRError
+
+logger = logging.getLogger(__name__)
+
+
+def _pcm_f32_to_wav(audio_bytes: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    """Wrap raw little-endian float32 PCM in a standard 16-bit PCM WAV container.
+
+    The audio pipeline captures ``float32`` samples in ``[-1.0, 1.0]`` (mono,
+    ``sample_rate`` Hz) and passes the *headerless* bytes straight through —
+    that is exactly what the local faster-whisper provider consumes via
+    ``np.frombuffer(..., dtype=np.float32)``. A remote ``/audio/transcriptions``
+    endpoint, however, needs a real decodable file: without the RIFF/WAVE
+    header the server cannot determine the sample rate/format and rejects the
+    upload with ``400 Bad Request``. We therefore convert float32 → int16 and
+    emit a conventional PCM WAV, which every Whisper-compatible endpoint
+    (OpenAI, Groq, whisper.cpp, …) accepts.
+    """
+    # Trim any trailing partial sample so ``frombuffer`` never rejects a
+    # buffer whose length is not an exact multiple of 4 bytes.
+    usable = len(audio_bytes) - (len(audio_bytes) % 4)
+    samples = np.frombuffer(audio_bytes[:usable], dtype=np.float32)
+    # Replace non-finite values, then clip before scaling so loud input does
+    # not wrap around when cast to int16.
+    samples = np.nan_to_num(samples, nan=0.0, posinf=1.0, neginf=-1.0)
+    int16 = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)  # int16
+        wav.setframerate(sample_rate)
+        wav.writeframes(int16.tobytes())
+    return buffer.getvalue()
 
 
 class OpenAICompatibleASRProvider(ASRProvider):
@@ -58,9 +95,16 @@ class OpenAICompatibleASRProvider(ASRProvider):
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
+        # The pipeline hands us raw float32 PCM (what faster-whisper consumes
+        # in-process); a remote endpoint needs a real WAV file or it 400s.
+        try:
+            wav_bytes = _pcm_f32_to_wav(audio_bytes, sample_rate)
+        except Exception as exc:  # malformed buffer — surface as an ASR error
+            raise ASRError(f"Failed to encode audio for upload: {exc}") from exc
+
         # Prepare multipart/form-data
         files = {
-            "file": ("audio.wav", audio_bytes, "audio/wav"),
+            "file": ("audio.wav", wav_bytes, "audio/wav"),
         }
         data = {
             "model": self._model,
@@ -82,9 +126,9 @@ class OpenAICompatibleASRProvider(ASRProvider):
         if self._config.extra:
             data.update(self._config.extra)
 
+        url = f"{self._endpoint.rstrip('/')}/audio/transcriptions"
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                url = f"{self._endpoint.rstrip('/')}/audio/transcriptions"
                 response = await client.post(url, headers=headers, files=files, data=data)
                 response.raise_for_status()
 
@@ -95,10 +139,23 @@ class OpenAICompatibleASRProvider(ASRProvider):
                     text=text, is_final=True, language_detected=result.get("language")
                 )
 
+        except httpx.HTTPStatusError as e:
+            # Surface the provider's own error body — it usually explains the
+            # real cause (unsupported model, endpoint that has no transcription
+            # API, bad audio, quota) far better than the bare status line.
+            detail = (e.response.text or "").strip()
+            if len(detail) > 500:
+                detail = detail[:500] + "…"
+            message = (
+                f"OpenAI-compatible ASR request failed: HTTP {e.response.status_code} from {url}"
+            )
+            if detail:
+                message += f" — {detail}"
+            raise ASRError(message) from e
         except httpx.HTTPError as e:
-            raise ASRError(f"OpenAI-compatible ASR request failed: {e}")
+            raise ASRError(f"OpenAI-compatible ASR request failed: {e}") from e
         except Exception as e:
-            raise ASRError(f"Unexpected error during ASR: {e}")
+            raise ASRError(f"Unexpected error during ASR: {e}") from e
 
     async def stream_transcribe(
         self,

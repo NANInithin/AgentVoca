@@ -66,9 +66,12 @@ class ConfigController:
         self._original = initial
         self._draft = initial.model_copy(deep=True)
         # Pre-serialise to dicts once so ``_diff_paths`` can walk them without
-        # caring about pydantic model instances.
-        self._original_dump = self._original.model_dump()
-        self._draft_dump = self._draft.model_dump()
+        # caring about pydantic model instances. We force ``exclude_defaults``
+        # off so the diff dicts have the same shape as what
+        # ``persistence.serialize`` writes to disk — otherwise omitted default
+        # fields would be missing from one side and the diff would mis-report.
+        self._original_dump = self._original.model_dump(exclude_defaults=False)
+        self._draft_dump = self._draft.model_dump(exclude_defaults=False)
 
     # ── Accessors ──────────────────────────────────────────────────────
 
@@ -100,7 +103,7 @@ class ConfigController:
     def replace_draft(self, new_draft: FullConfig) -> None:
         """Replace the entire draft (used by "Restore defaults" and similar)."""
         self._draft = new_draft.model_copy(deep=True)
-        self._draft_dump = self._draft.model_dump()
+        self._draft_dump = self._draft.model_dump(exclude_defaults=False)
 
     def update_section(self, **kwargs: Any) -> None:
         """Mutate the draft by passing keyword args to ``FullConfig.model_copy``.
@@ -120,9 +123,13 @@ class ConfigController:
             if isinstance(value, dict):
                 data[section] = {**(data.get(section) or {}), **value}
             else:
-                data[section] = value.model_dump() if hasattr(value, "model_dump") else value
+                data[section] = (
+                    value.model_dump(exclude_defaults=False)
+                    if hasattr(value, "model_dump")
+                    else value
+                )
         self._draft = FullConfig.model_validate(data, strict=False)
-        self._draft_dump = data
+        self._draft_dump = self._draft.model_dump(exclude_defaults=False)
 
     # ── Validation ─────────────────────────────────────────────────────
 
@@ -171,7 +178,7 @@ class ConfigController:
         # Promote the draft to original so the diff is measured against the
         # just-saved file on subsequent edits.
         self._original = self._draft.model_copy(deep=True)
-        self._original_dump = dict(self._draft_dump)
+        self._original_dump = self._draft.model_dump(exclude_defaults=False)
 
         return SaveResult(
             success=True,
@@ -184,7 +191,7 @@ class ConfigController:
     def revert(self) -> None:
         """Discard all draft changes and restore the originally-loaded config."""
         self._draft = self._original.model_copy(deep=True)
-        self._draft_dump = dict(self._original_dump)
+        self._draft_dump = self._original.model_dump(exclude_defaults=False)
 
     # ── Diff utilities ─────────────────────────────────────────────────
 
@@ -219,6 +226,12 @@ def _diff_paths(a: Any, b: Any, prefix: str = "") -> Iterable[str]:
     """Yield dotted paths where ``a`` and ``b`` differ.
 
     Walks dicts and lists recursively. Scalars are compared directly.
+
+    List handling: when the lengths differ (or contents differ at any index)
+    we yield the parent path once so the caller knows the list as a whole
+    changed, and then yield ``prefix.<i>`` for each index that differs so
+    the diff surfaces individual edits inside a list (e.g. changing one
+    vocab term instead of adding a new one).
     """
     if _values_equal(a, b):
         return
@@ -229,10 +242,15 @@ def _diff_paths(a: Any, b: Any, prefix: str = "") -> Iterable[str]:
         return
 
     if isinstance(a, list) and isinstance(b, list):
-        # Treat lists as opaque if both are present and length differs; this
-        # matches the user's expectation of "I added a vocab term" being a
-        # change at the vocabulary.inline path, not inside the list.
+        # Surface the list itself as a single path so callers that only care
+        # about "did the list change?" still get a hit.
         yield prefix or "."
+        # Also report per-index differences so editing an existing element
+        # in a same-length list is detected.
+        for i in range(max(len(a), len(b))):
+            av = a[i] if i < len(a) else None
+            bv = b[i] if i < len(b) else None
+            yield from _diff_paths(av, bv, f"{prefix}.{i}" if prefix else str(i))
         return
 
     yield prefix or "."

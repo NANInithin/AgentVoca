@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from agentvoca.setup.controllers.config_controller import defaults_controller
 from agentvoca.setup.first_run import set_wizard_auto_open
@@ -36,6 +36,20 @@ class WelcomePage(ConfigPage):
     def _build(self) -> None:
         super()._build()
         layout = self._body_layout
+
+        # Banner surfaced when the app was launched with a config that could
+        # not be fully loaded (e.g. a missing API-key env var). Hidden unless
+        # ``show_startup_warning`` is called by the wizard. Replaces the old
+        # standalone "Config needs attention" message box.
+        self._warning_banner = QtWidgets.QLabel()
+        self._warning_banner.setWordWrap(True)
+        self._warning_banner.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._warning_banner.setStyleSheet(
+            "background-color: #4d3b00; color: #ffd666;"
+            " border: 1px solid #8a6d00; border-radius: 6px; padding: 10px;"
+        )
+        self._warning_banner.setVisible(False)
+        layout.addWidget(self._warning_banner)
 
         intro = QtWidgets.QLabel(
             "agentvoca listens to your microphone, transcribes speech, "
@@ -83,6 +97,23 @@ class WelcomePage(ConfigPage):
         version_label = QtWidgets.QLabel(version_text)
         version_label.setStyleSheet("color: #888;")
         layout.addWidget(version_label)
+
+    def show_startup_warning(self, message: str) -> None:
+        """Display an amber banner explaining a config that failed to load.
+
+        Called by the wizard when the app was started with an invalid config
+        (e.g. a remote provider whose API-key env var is unset). The user can
+        fix it via "Customize", start over with "Use defaults", or load a
+        good "Restore from backup".
+        """
+        self._warning_banner.setText(
+            "<b>Your saved config could not be fully loaded.</b><br>"
+            f"{message}<br><br>"
+            "Fix it below — <b>Customize</b> to edit it, <b>Use defaults</b> to "
+            "start fresh, or <b>Restore from backup</b>. agentvoca is running on "
+            "safe defaults until you save."
+        )
+        self._warning_banner.setVisible(True)
 
     # ── Slots ──────────────────────────────────────────────────────────
 

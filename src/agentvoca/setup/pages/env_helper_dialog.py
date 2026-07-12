@@ -26,7 +26,16 @@ from agentvoca.setup.controllers.env_helper import (
 
 
 class EnvHelperDialog(QtWidgets.QDialog):
-    """Modal dialog to inspect / set an env var with copyable snippets."""
+    """Modal dialog to inspect / set an env var with copyable snippets.
+
+    Emits ``env_var_changed(str)`` whenever the user confirms a new env var
+    name (via the dialog's "Rename" affordance) or closes the dialog. Pages
+    connect to this so the QLineEdit next to the "Set API key…" button stays
+    in sync with the helper — otherwise users could set a key for one name
+    and the controller would still see a different one.
+    """
+
+    env_var_changed = QtCore.Signal(str)
 
     def __init__(
         self,
@@ -45,13 +54,24 @@ class EnvHelperDialog(QtWidgets.QDialog):
     # ── UI construction ────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout()
-        layout.setSpacing(10)
+        outer = QtWidgets.QVBoxLayout()
+        outer.setSpacing(10)
+
+        # Env var name (editable so the user can switch to e.g.
+        # OPENROUTER_API_KEY without leaving the dialog). Changes flow
+        # through _on_name_changed which rebuilds the snippet previews and
+        # notifies the host page via env_var_changed.
+        name_layout = QtWidgets.QFormLayout()
+        self._name_input = QtWidgets.QLineEdit(self._env_var_name)
+        self._name_input.setPlaceholderText("OPENAI_API_KEY")
+        self._name_input.textChanged.connect(self._on_name_changed)
+        name_layout.addRow("Env var name:", self._name_input)
+        outer.addLayout(name_layout)
 
         # Status row
         self._status_label = QtWidgets.QLabel()
         self._status_label.setWordWrap(True)
-        layout.addWidget(self._status_label)
+        outer.addWidget(self._status_label)
 
         # Value input
         value_layout = QtWidgets.QFormLayout()
@@ -59,7 +79,7 @@ class EnvHelperDialog(QtWidgets.QDialog):
         self._value_input.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         self._value_input.setPlaceholderText("Paste your API key here…")
         value_layout.addRow("Value:", self._value_input)
-        layout.addLayout(value_layout)
+        outer.addLayout(value_layout)
 
         # Session buttons
         button_row = QtWidgets.QHBoxLayout()
@@ -70,16 +90,46 @@ class EnvHelperDialog(QtWidgets.QDialog):
         button_row.addWidget(self._set_session_btn)
         button_row.addWidget(self._unset_session_btn)
         button_row.addStretch()
-        layout.addLayout(button_row)
+        outer.addLayout(button_row)
 
-        # Persistence snippets
+        # Persistence snippets label
         snippets_label = QtWidgets.QLabel(
             "To make this env var permanent, paste the matching line into "
             "your shell profile. AgentVoca never stores the value."
         )
         snippets_label.setWordWrap(True)
         snippets_label.setStyleSheet("color: #666;")
-        layout.addWidget(snippets_label)
+        outer.addWidget(snippets_label)
+
+        # Snippet container — child widgets are torn down + rebuilt whenever
+        # the env var name changes so the copyable text always reflects the
+        # current name.
+        self._snippets_container = QtWidgets.QWidget()
+        self._snippets_layout = QtWidgets.QVBoxLayout(self._snippets_container)
+        self._snippets_layout.setContentsMargins(0, 0, 0, 0)
+        self._snippets_layout.setSpacing(6)
+        outer.addWidget(self._snippets_container)
+        self._rebuild_snippets()
+
+        # Close
+        close_row = QtWidgets.QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_row.addWidget(close_btn)
+        outer.addLayout(close_row)
+
+        self.setLayout(outer)
+
+    def _rebuild_snippets(self) -> None:
+        """Tear down and rebuild the per-shell snippet groups for the current name."""
+        # Remove existing children from the layout before adding fresh ones.
+        while self._snippets_layout.count():
+            item = self._snippets_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
         for shell_name, snippet in all_snippets(self._env_var_name, "<your-api-key>").items():
             group = QtWidgets.QGroupBox(shell_name)
@@ -91,17 +141,7 @@ class EnvHelperDialog(QtWidgets.QDialog):
             copy_btn = QtWidgets.QPushButton("Copy")
             copy_btn.clicked.connect(lambda _checked=False, s=snippet: self._copy_to_clipboard(s))
             group_layout.addWidget(copy_btn, alignment=QtCore.Qt.AlignmentFlag.AlignTop)
-            layout.addWidget(group)
-
-        # Close
-        close_row = QtWidgets.QHBoxLayout()
-        close_row.addStretch()
-        close_btn = QtWidgets.QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        close_row.addWidget(close_btn)
-        layout.addLayout(close_row)
-
-        self.setLayout(layout)
+            self._snippets_layout.addWidget(group)
 
     # ── Status refresh ─────────────────────────────────────────────────
 
@@ -115,6 +155,21 @@ class EnvHelperDialog(QtWidgets.QDialog):
         else:
             self._status_label.setText(f"⚠ <b>{self._env_var_name}</b> is not set in this session.")
             self._status_label.setStyleSheet("color: #b36400;")
+
+    def _on_name_changed(self, name: str) -> None:
+        # Update the name used by the rest of the dialog. We also update the
+        # snippet previews and re-probe status so the dialog always reflects
+        # the env var the user is about to set a key for.
+        name = name.strip()
+        if not name:
+            return
+        self._env_var_name = name
+        self.setWindowTitle(f"Set {name}")
+        # Rebuild the snippet widgets so the copyable text uses the new name.
+        self._rebuild_snippets()
+        self._refresh_status()
+        # Notify the host page so its QLineEdit stays in sync.
+        self.env_var_changed.emit(name)
 
     # ── Slots ──────────────────────────────────────────────────────────
 

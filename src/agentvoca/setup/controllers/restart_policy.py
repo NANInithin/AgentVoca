@@ -14,7 +14,10 @@ built) is hot.
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable
+
+logger = logging.getLogger(__name__)
 
 # Dotted paths are matched against ``FullConfig`` field paths, e.g.
 # ``"asr.provider"`` matches both the literal key and any prefix under it.
@@ -110,27 +113,61 @@ _HOT_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def _classify(path: str) -> str | None:
+    """Classify ``path`` as ``"hot"``, ``"restart"``, or ``None`` (unknown).
+
+    ``_diff_paths`` (config_controller.py) yields both a list field's own
+    path (e.g. ``"vocabulary.inline"``) and per-index paths for any entries
+    that changed (e.g. ``"vocabulary.inline.1"``, or for a list of dicts,
+    ``"context.profiles.0.name"``). Only the bare field is enumerated in
+    ``_HOT_FIELDS``/``_RESTART_FIELDS``, so we walk from the full path up to
+    its shortest prefix and classify by the first (i.e. longest) prefix that
+    is known — this is the "matches the literal key and any prefix under
+    it" behavior described in the module docstring.
+    """
+    parts = path.split(".")
+    for i in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:i])
+        if candidate in _HOT_FIELDS:
+            return "hot"
+        if candidate in _RESTART_FIELDS:
+            return "restart"
+    return None
+
+
 def is_restart_field(path: str) -> bool:
     """Return True if the field at dotted ``path`` requires an app restart."""
-    return path in _RESTART_FIELDS
+    return _classify(path) == "restart"
 
 
 def is_hot_field(path: str) -> bool:
     """Return True if the field at dotted ``path`` can be applied live."""
-    return path in _HOT_FIELDS
+    return _classify(path) == "hot"
 
 
 def partition(changed_paths: Iterable[str]) -> tuple[list[str], list[str]]:
     """Split a set of changed paths into (hot, restart).
 
-    Paths not classified either way default to restart to fail safe.
+    Paths not classified either way (even after prefix matching, see
+    ``_classify``) default to restart to fail safe, and are logged at
+    WARNING so a missing classification surfaces during development instead
+    of silently producing a misleading "restart required" banner for a
+    field that may not actually need one.
     """
     hot: list[str] = []
     restart: list[str] = []
     for path in changed_paths:
-        if is_hot_field(path):
+        classification = _classify(path)
+        if classification == "hot":
             hot.append(path)
         else:
+            if classification is None:
+                logger.warning(
+                    "Config field '%s' changed but is not classified as hot "
+                    "or restart; defaulting to restart. Add it to "
+                    "restart_policy._HOT_FIELDS or _RESTART_FIELDS to silence.",
+                    path,
+                )
             restart.append(path)
     return hot, restart
 

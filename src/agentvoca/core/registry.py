@@ -54,23 +54,17 @@ class ProviderRegistry:
         ``_register_cuda_dlls``) and other heavy modules out of the
         cold-start import graph.
         """
-        self.register_asr(
-            "faster_whisper", "agentvoca.asr.faster_whisper:FasterWhisperProvider"
-        )
+        self.register_asr("faster_whisper", "agentvoca.asr.faster_whisper:FasterWhisperProvider")
         self.register_asr(
             "openai_compatible",
             "agentvoca.asr.openai_compatible:OpenAICompatibleASRProvider",
         )
-        self.register_cleanup(
-            "none", "agentvoca.cleanup.none:NoneCleanupProvider"
-        )
+        self.register_cleanup("none", "agentvoca.cleanup.none:NoneCleanupProvider")
         self.register_cleanup(
             "openai_compatible",
             "agentvoca.cleanup.openai_compatible:OpenAICompatibleCleanupProvider",
         )
-        self.register_cleanup(
-            "rules", "agentvoca.cleanup.rules:RulesCleanupProvider"
-        )
+        self.register_cleanup("rules", "agentvoca.cleanup.rules:RulesCleanupProvider")
         self.register_vision(
             "openai_compatible",
             "agentvoca.vision.openai_compatible:OpenAICompatibleVisionProvider",

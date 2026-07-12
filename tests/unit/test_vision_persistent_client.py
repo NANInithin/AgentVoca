@@ -55,9 +55,7 @@ class _TestableVisionProvider(OpenAICompatibleVisionProvider):
 def _provider(monkeypatch) -> OpenAICompatibleVisionProvider:
     """Build a vision provider backed by a counting client."""
     CountingClient.construct_count = 0
-    monkeypatch.setattr(
-        vision_module, "OpenAICompatibleVisionProvider", _TestableVisionProvider
-    )
+    monkeypatch.setattr(vision_module, "OpenAICompatibleVisionProvider", _TestableVisionProvider)
     config = VisionConfig(
         provider="openai_compatible",
         endpoint="https://api.example.com/v1",

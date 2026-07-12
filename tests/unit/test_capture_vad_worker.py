@@ -60,9 +60,7 @@ class TestSingleVADInference:
     """R1: each 64 ms audio block triggers exactly ONE silero inference."""
 
     @patch("agentvoca.audio.capture.select_device")
-    def test_callback_enqueues_each_block_worker_counts_once(
-        self, mock_select: MagicMock
-    ) -> None:
+    def test_callback_enqueues_each_block_worker_counts_once(self, mock_select: MagicMock) -> None:
         mock_select.return_value = {"name": "Mock", "index": 0}
         event_bus = EventBus()
         call_counter = {"n": 0}
@@ -92,9 +90,7 @@ class TestSingleVADInference:
 
         # R1+R2: exactly one is_speech call per block. Old pre-R1 code called
         # it twice per block (2N). New code: worker is the only call site.
-        assert call_counter["n"] == N, (
-            f"Expected {N} is_speech calls, got {call_counter['n']}"
-        )
+        assert call_counter["n"] == N, f"Expected {N} is_speech calls, got {call_counter['n']}"
 
         capt.stop_recording()
         capt.stop()
@@ -126,9 +122,7 @@ class TestStaleQueueHygiene:
     """R2: ``start_recording`` clears leftover blocks from a prior recording."""
 
     @patch("agentvoca.audio.capture.select_device")
-    def test_stale_queue_drained_at_recording_start(
-        self, mock_select: MagicMock
-    ) -> None:
+    def test_stale_queue_drained_at_recording_start(self, mock_select: MagicMock) -> None:
         mock_select.return_value = {"name": "Mock", "index": 0}
         event_bus = EventBus()
         vad = _stub_vad(event_bus, lambda chunk: True)
@@ -155,9 +149,7 @@ class TestCallbackLatency:
     """R2: callback p99 stays under real-time even when VAD is slow."""
 
     @patch("agentvoca.audio.capture.select_device")
-    def test_callback_p99_under_5ms_with_slow_inference(
-        self, mock_select: MagicMock
-    ) -> None:
+    def test_callback_p99_under_5ms_with_slow_inference(self, mock_select: MagicMock) -> None:
         mock_select.return_value = {"name": "Mock", "index": 0}
         event_bus = EventBus()
 
@@ -207,9 +199,7 @@ class TestAutoStopStillFires:
     """R2: auto-stop still fires within ``silence_timeout_ms + a few blocks``."""
 
     @patch("agentvoca.audio.capture.select_device")
-    async def test_auto_stop_fires_after_timeout(
-        self, mock_select: MagicMock
-    ) -> None:
+    async def test_auto_stop_fires_after_timeout(self, mock_select: MagicMock) -> None:
         loop_thread = AsyncLoopThread()
         loop_thread.start()
 

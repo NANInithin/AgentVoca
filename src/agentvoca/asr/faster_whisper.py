@@ -350,9 +350,7 @@ class FasterWhisperProvider(ASRProvider):
     # ── v2 streaming ──────────────────────────────────────────────────
 
     @staticmethod
-    def _window_snapshot(
-        buffer: bytearray, window_s: int, sample_rate: int
-    ) -> np.ndarray:
+    def _window_snapshot(buffer: bytearray, window_s: int, sample_rate: int) -> np.ndarray:
         """Copy the last ``window_s`` seconds out of ``buffer`` with one allocation.
 
         A memoryview slice avoids copying the whole buffer. The ``with``

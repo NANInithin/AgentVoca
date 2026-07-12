@@ -40,8 +40,7 @@ def test_bulk_mappings_trigger_single_rebuild(counting_build_pattern):
     vocab.add_mappings(pairs)
 
     assert counter["calls"] == 1, (
-        f"expected 1 rebuild, got {counter['calls']} "
-        "(add_mappings should batch and rebuild once)"
+        f"expected 1 rebuild, got {counter['calls']} (add_mappings should batch and rebuild once)"
     )
 
 

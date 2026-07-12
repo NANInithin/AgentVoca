@@ -12,6 +12,7 @@ executor. This is important for test isolation — integration tests that
 drive ``main()`` may shut the executor down as part of the app's
 ``finally`` block, after which unit tests still need a working pool.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -24,9 +25,7 @@ def get_input_executor() -> ThreadPoolExecutor:
     and replacing it after a previous shutdown."""
     global _input_executor
     if _input_executor is None or _input_executor._shutdown:  # type: ignore[attr-defined]
-        _input_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="agentvoca-input"
-        )
+        _input_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agentvoca-input")
     return _input_executor
 
 
@@ -41,4 +40,3 @@ def shutdown_input_executor() -> None:
     if _input_executor is not None:
         _input_executor.shutdown(wait=False, cancel_futures=True)
         _input_executor = None
-

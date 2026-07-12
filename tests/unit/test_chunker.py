@@ -278,8 +278,7 @@ class TestChunkerRP5Compact:
             chunker.add_audio(b"\xab" * 100_000)  # 100 KB
             # Before draining, buffer has at most 100 KB more than last emit.
             assert len(chunker._buffer) <= 100_000, (
-                f"Buffer grew unbounded at iteration {i}: "
-                f"{len(chunker._buffer)} bytes"
+                f"Buffer grew unbounded at iteration {i}: {len(chunker._buffer)} bytes"
             )
             delta = chunker._get_delta()
             assert len(delta) == 100_000
@@ -304,4 +303,3 @@ class TestChunkerRP5Compact:
         # The flush must contain the tail bytes we added after the regular emission.
         flush_total = sum(len(c.data) for c in flush_chunks)
         assert flush_total >= 3000
-

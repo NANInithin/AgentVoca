@@ -52,9 +52,7 @@ def test_prompt_read_once_per_mtime(tmp_path, monkeypatch):
     provider._load_custom_prompt()
     provider._load_custom_prompt()
 
-    assert open_count["n"] == 1, (
-        f"expected 1 file read, got {open_count['n']} (cache miss)"
-    )
+    assert open_count["n"] == 1, f"expected 1 file read, got {open_count['n']} (cache miss)"
 
 
 def test_prompt_cache_invalidated_by_mtime(tmp_path):

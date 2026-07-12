@@ -1278,9 +1278,7 @@ class Orchestrator:
                     try:
                         loop = asyncio.get_running_loop()
                     except RuntimeError:
-                        logger.debug(
-                            "No running loop for old cleanup shutdown; skipping"
-                        )
+                        logger.debug("No running loop for old cleanup shutdown; skipping")
                     else:
                         loop.create_task(old_shutdown())
                 if not self._cleanup_provider.is_available():

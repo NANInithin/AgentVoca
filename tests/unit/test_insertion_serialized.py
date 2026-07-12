@@ -35,6 +35,7 @@ def test_concurrent_insert_and_undo_do_not_interleave(monkeypatch):
             time.sleep(sleep_s)
             end = time.perf_counter()
             intervals.append((name, start, end))
+
         return stub
 
     fake_pyautogui = type(

@@ -3,6 +3,7 @@
 Provider classes are imported lazily (PEP 562) so that importing this
 package does not pull in httpx / heavy cleanup-provider dependencies.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -26,9 +27,7 @@ _REGISTRY_KEYS = {
 def __getattr__(name: str):
     if name == "BUILTIN_CLEANUP_PROVIDERS":
         return {
-            _REGISTRY_KEYS[cls]: getattr(
-                importlib.import_module(mod), cls
-            )
+            _REGISTRY_KEYS[cls]: getattr(importlib.import_module(mod), cls)
             for cls, mod in _LAZY.items()
         }
     if name in _LAZY:

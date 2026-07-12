@@ -67,31 +67,65 @@ def test_register_class_then_string_in_same_slot():
     from agentvoca.vision.base import VisionProvider
 
     class _A(ASRProvider):
-        def __init__(self, config): self.config = config
-        def get_name(self): return "a"
-        def is_available(self): return True
-        def supports_streaming(self): return False
-        def transcribe_audio(self, *a, **k): raise NotImplementedError
-        def stream_transcribe(self, *a, **k): raise NotImplementedError
+        def __init__(self, config):
+            self.config = config
+
+        def get_name(self):
+            return "a"
+
+        def is_available(self):
+            return True
+
+        def supports_streaming(self):
+            return False
+
+        def transcribe_audio(self, *a, **k):
+            raise NotImplementedError
+
+        def stream_transcribe(self, *a, **k):
+            raise NotImplementedError
 
     class _C(CleanupProvider):
-        def __init__(self, config): self.config = config
-        def get_name(self): return "c"
-        def is_available(self): return True
-        def rewrite(self, *a, **k): raise NotImplementedError
+        def __init__(self, config):
+            self.config = config
+
+        def get_name(self):
+            return "c"
+
+        def is_available(self):
+            return True
+
+        def rewrite(self, *a, **k):
+            raise NotImplementedError
 
     class _I(InsertionStrategy):
-        def __init__(self, config): self.config = config
-        def get_name(self): return "i"
-        def is_available(self): return True
-        def insert(self, *a, **k): raise NotImplementedError
-        def undo_last(self): return True
+        def __init__(self, config):
+            self.config = config
+
+        def get_name(self):
+            return "i"
+
+        def is_available(self):
+            return True
+
+        def insert(self, *a, **k):
+            raise NotImplementedError
+
+        def undo_last(self):
+            return True
 
     class _V(VisionProvider):
-        def __init__(self, config): self.config = config
-        def get_name(self): return "v"
-        def is_available(self): return True
-        def extract(self, *a, **k): raise NotImplementedError
+        def __init__(self, config):
+            self.config = config
+
+        def get_name(self):
+            return "v"
+
+        def is_available(self):
+            return True
+
+        def extract(self, *a, **k):
+            raise NotImplementedError
 
     reg.register_asr("a", _A)
     reg.register_cleanup("c", _C)

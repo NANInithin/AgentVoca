@@ -83,9 +83,7 @@ class AudioCapture:
         # bool read/write atomic for our purposes.  64-deep queue bounds
         # staleness at ~4 s in the worst case (drop-on-full fallback in
         # the callback).
-        self._vad_queue: "queue.Queue[tuple[bytes, int] | None]" = queue.Queue(
-            maxsize=64
-        )
+        self._vad_queue: "queue.Queue[tuple[bytes, int] | None]" = queue.Queue(maxsize=64)
         # Optimistic default so we never trigger auto-stop before the
         # worker has produced its first result.
         self._last_vad_speech: bool = True
@@ -310,9 +308,7 @@ class AudioCapture:
                 # VADSpeechEvent on a transition (from this worker thread,
                 # which is the same cross-thread publication pattern the
                 # audio callback used previously — EventBus handles it).
-                self._last_vad_speech = self._vad.process_chunk(
-                    audio_bytes, timestamp_ms
-                )
+                self._last_vad_speech = self._vad.process_chunk(audio_bytes, timestamp_ms)
             except Exception:
                 logger.debug("VAD worker inference failed", exc_info=True)
                 # Fail open, same fallback behaviour VAD.is_speech uses.

@@ -64,9 +64,7 @@ def _provider(monkeypatch) -> OpenAICompatibleCleanupProvider:
     )
     # Belt-and-braces: also patch the provider module so any direct
     # reference to the symbol resolves to the test subclass.
-    monkeypatch.setattr(
-        openai_module, "OpenAICompatibleCleanupProvider", _TestableCleanupProvider
-    )
+    monkeypatch.setattr(openai_module, "OpenAICompatibleCleanupProvider", _TestableCleanupProvider)
     config = CleanupConfig(
         provider="openai_compatible",
         endpoint="https://api.example.com/v1",
@@ -122,6 +120,7 @@ async def test_shutdown_missing_on_provider_without_method(monkeypatch):
     adapters) are skipped by ``Orchestrator.stop()``'s getattr guard.
     Verify the soft contract here by patching a provider-shaped object.
     """
+
     class NoShutdownProvider:
         async def rewrite(self, transcript, context=None):
             return transcript

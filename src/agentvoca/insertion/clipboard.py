@@ -61,9 +61,7 @@ class ClipboardInsertionStrategy(InsertionStrategy):
         try:
             # Write to clipboard
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                get_input_executor(), lambda: pyperclip.copy(text)
-            )
+            await loop.run_in_executor(get_input_executor(), lambda: pyperclip.copy(text))
             # Allow clipboard to settle
             await asyncio.sleep(0.05)
 

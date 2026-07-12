@@ -139,7 +139,7 @@ class AudioChunker:
         state is possible (R5).
         """
         end = len(self._buffer)
-        delta = bytes(self._buffer[self._last_emit_pos:end])
+        delta = bytes(self._buffer[self._last_emit_pos : end])
         del self._buffer[:end]
         self._last_emit_pos = 0
         return delta

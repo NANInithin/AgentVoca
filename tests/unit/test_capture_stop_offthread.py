@@ -43,9 +43,7 @@ class TestStopOffloadsFinalization:
 
             event_bus.subscribe(RecordingStoppedEvent, _capture)
 
-            with patch(
-                "agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE
-            ):
+            with patch("agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE):
                 with patch("agentvoca.audio.capture.sd.InputStream"):
                     capt = AudioCapture(
                         event_bus=event_bus,
@@ -62,9 +60,7 @@ class TestStopOffloadsFinalization:
 
             # Call stop from a thread that is neither the loop thread nor the
             # audio callback thread.
-            off_thread = threading.Thread(
-                target=lambda: capt.stop_recording(), daemon=True
-            )
+            off_thread = threading.Thread(target=lambda: capt.stop_recording(), daemon=True)
             off_thread.start()
             # Wait briefly for the call to land on the loop.
             deadline = time.time() + 1.0
@@ -96,9 +92,7 @@ class TestStopOffloadsFinalization:
 
         event_bus.subscribe(RecordingStoppedEvent, _capture)
 
-        with patch(
-            "agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE
-        ):
+        with patch("agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE):
             with patch("agentvoca.audio.capture.sd.InputStream"):
                 capt = AudioCapture(event_bus=event_bus, loop=None)
                 capt.start()
@@ -125,9 +119,7 @@ class TestDoubleStopIsNoop:
         captured: list[RecordingStoppedEvent] = []
         event_bus.subscribe(RecordingStoppedEvent, captured.append)
 
-        with patch(
-            "agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE
-        ):
+        with patch("agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE):
             with patch("agentvoca.audio.capture.sd.InputStream"):
                 capt = AudioCapture(event_bus=event_bus, loop=None)
                 capt.start()
@@ -137,9 +129,7 @@ class TestDoubleStopIsNoop:
                 capt.stop_recording()
                 capt.stop_recording()  # second call
 
-        assert len(captured) == 1, (
-            f"Second stop() should be a no-op, got {len(captured)} events"
-        )
+        assert len(captured) == 1, f"Second stop() should be a no-op, got {len(captured)} events"
 
 
 class TestAutoStopFromCallbackDoesNotBlockOnJoin:
@@ -155,13 +145,9 @@ class TestAutoStopFromCallbackDoesNotBlockOnJoin:
             event_bus = EventBus()
             event_bus.set_loop(loop_thread.loop)
 
-            with patch(
-                "agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE
-            ):
+            with patch("agentvoca.audio.capture.select_device", return_value=_MOCK_DEVICE):
                 with patch("agentvoca.audio.capture.sd.InputStream"):
-                    capt = AudioCapture(
-                        event_bus=event_bus, loop=loop_thread.loop
-                    )
+                    capt = AudioCapture(event_bus=event_bus, loop=loop_thread.loop)
                     capt.start()
                     capt.start_recording()
 
@@ -180,8 +166,7 @@ class TestAutoStopFromCallbackDoesNotBlockOnJoin:
             # The join must NOT run synchronously on the thread that called
             # stop_recording(); the callback should finish in milliseconds.
             assert elapsed_ms < 20.0, (
-                f"Audio callback took {elapsed_ms:.1f} ms; "
-                f"suggests buffer join is running inline"
+                f"Audio callback took {elapsed_ms:.1f} ms; suggests buffer join is running inline"
             )
 
             # Give the loop a tick to publish the event.

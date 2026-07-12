@@ -6,6 +6,7 @@ runs ``_register_cuda_dlls()`` at import time — keeping it out of the
 cold-start path means a user who picks a cloud ASR provider never pays
 for it.
 """
+
 from __future__ import annotations
 
 import importlib

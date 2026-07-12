@@ -1090,17 +1090,24 @@ class Orchestrator:
             output_format=self._config.vision.output_format,
         )
 
-        extractions: list[str] = []
-        for shot in shots:
+        # R10: extract concurrently. asyncio.gather preserves input
+        # order, so the anchor splicer sees the same ordering as the
+        # pre-R10 serial loop. Per-shot errors are isolated inside
+        # _extract_one. Concurrency is naturally bounded by the
+        # persistent httpx client's max_connections=4 (R8) — extra
+        # shots queue inside the connection pool, no semaphore needed.
+        async def _extract_one(shot: bytes) -> Optional[str]:
             try:
                 extracted = await self._vision_provider.extract(
                     shot, instruction=text, context=context
                 )
             except VisionError as exc:
                 logger.warning("Vision extraction failed for a screenshot: %s", exc)
-                continue
-            if extracted and extracted.strip():
-                extractions.append(extracted.strip())
+                return None
+            return extracted.strip() if extracted and extracted.strip() else None
+
+        results = await asyncio.gather(*(_extract_one(s) for s in shots))
+        extractions = [r for r in results if r]
 
         if not extractions:
             return text, False

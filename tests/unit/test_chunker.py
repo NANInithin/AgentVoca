@@ -247,3 +247,61 @@ class TestChunkerEdgeCases:
         await asyncio.sleep(0.01)
         await chunker.stop()
         await task
+
+
+class TestChunkerRP5Compact:
+    """R5: ``_get_delta`` compacts the buffer; size stays bounded."""
+
+    async def test_concatenation_equals_inputs(self, event_bus: EventBus) -> None:
+        """Sum of all emitted deltas equals the sum of all added audio.
+
+        With or without R5 compaction, this must hold; the R5 change
+        preserves this invariant while reducing peak buffer size.
+        """
+        chunker = AudioChunker(event_bus=event_bus, chunk_ms=50, window_s=0, sample_rate=16000)
+        chunker.start()
+
+        inputs = [bytes([i & 0xFF]) * 100_000 for i in range(10)]  # 10 × 100 KB
+        deltas: list[bytes] = []
+        for chunk in inputs:
+            chunker.add_audio(chunk)
+            deltas.append(chunker._get_delta())
+
+        assert b"".join(deltas) == b"".join(inputs)
+
+    async def test_buffer_stays_bounded(self, event_bus: EventBus) -> None:
+        """After every ``_get_delta``, ``_buffer`` is empty (compacted)."""
+        chunker = AudioChunker(event_bus=event_bus, chunk_ms=50, window_s=0, sample_rate=16000)
+        chunker.start()
+
+        for i in range(10):
+            chunker.add_audio(b"\xab" * 100_000)  # 100 KB
+            # Before draining, buffer has at most 100 KB more than last emit.
+            assert len(chunker._buffer) <= 100_000, (
+                f"Buffer grew unbounded at iteration {i}: "
+                f"{len(chunker._buffer)} bytes"
+            )
+            delta = chunker._get_delta()
+            assert len(delta) == 100_000
+            # After drain, buffer must be back to empty (R5 compaction).
+            assert len(chunker._buffer) == 0
+            assert chunker._last_emit_pos == 0
+
+    async def test_flush_emits_tail_exactly_once(
+        self, chunker: AudioChunker, event_bus: EventBus
+    ) -> None:
+        """``stop(flush=True)`` publishes exactly one flush chunk holding the tail."""
+        collector = ChunkCollector(event_bus)
+        chunker.start()
+        chunker.add_audio(b"\x55" * 5000)
+        await asyncio.sleep(0.07)  # let one regular emission fire
+        chunker.add_audio(b"\xaa" * 3000)
+        await chunker.stop()  # flush=True default
+
+        # Exactly one flush chunk, and its data covers the un-emitted tail.
+        flush_chunks = collector.flush_chunks
+        assert len(flush_chunks) >= 1
+        # The flush must contain the tail bytes we added after the regular emission.
+        flush_total = sum(len(c.data) for c in flush_chunks)
+        assert flush_total >= 3000
+

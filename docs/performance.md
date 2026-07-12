@@ -17,6 +17,10 @@ These are the **targets** for the local default stack (faster-whisper +
 | Key-up → final inserted (short utterance) | full ASR + cleanup, serial | ≤ 800 ms | warm-up + pipelined cleanup |
 | Cold-start penalty (first dictation) | seconds | 0 (amortized at startup) | `warm_up()` |
 | Cleanup tail after stop (multi-sentence) | full pass | ≤ 40% of v1 | `cleanup.streaming` |
+| Audio callback p99 (per 64 ms block) | unbounded (silero inference inline) | ≤ 5 ms | dedicated VAD worker thread (R2) |
+| Streaming-ASR memory churn (per 500 ms partial) | `O(N)` per partial (full copy) | bounded by window (≈ `window_s * sample_rate * 4 B` per partial) | memoryview + single copy (R4) |
+| Audio buffer (peak) | grows with recording | bounded — chunker compacts after each emit | chunker `_get_delta` deletes emitted bytes (R5) |
+| Auto-stop join + publish | blocks the audio callback (multi-MB `b"".join`) | runs on the loop thread, callback returns in < 5 ms | `stop_recording` defers finalization (R3) |
 
 The CI benchmark does **not** measure these real-model numbers (CI has no GPU).
 It measures *orchestration overhead* with mock providers, so a regression in
@@ -120,6 +124,44 @@ cleanup:
 Warm-up runs in the background after the tray appears, so it never blocks
 startup. It removes the first-dictation penalty. Disable it only if startup
 memory pressure is a concern.
+
+### Audio callback budget (R2)
+
+The sounddevice callback runs every ~64 ms (`frames_per_buffer=1024` @
+16 kHz). It must do **near-zero work** so audio is never underrun on a
+loaded system. Since v0.3.6, silero VAD inference runs on a dedicated
+daemon thread (`agentvoca-vad`); the callback only enqueues a tuple and
+reads a cached bool. The budget is enforced by
+`tests/unit/test_capture_vad_worker.py::test_callback_p99_under_5ms_with_slow_inference`.
+
+### Streaming-ASR memory churn (R4)
+
+Each `asr.streaming_chunk_ms` tick used to allocate a full copy of the
+recording (`np.frombuffer(bytes(full_buffer))`) plus another full copy
+into the window. Over a 2-minute dictation that was ~0.9 GB of churn and
+a small per-block stall on the loop. Since v0.3.6, the window is built
+with a `memoryview` slice and exactly one `.copy()`, and the buffer is
+only snapshotted when a new partial is actually being submitted. The
+peak-per-iteration bound is `window_s * sample_rate * 4 B` (one window).
+Enforced by `tests/unit/test_streaming_no_quadratic_copy.py`.
+
+### Audio buffer footprint (R5)
+
+`AudioChunker._buffer` used to grow for the entire recording — a second
+copy of the audio alongside the orchestrator's full buffer and the
+sounddevice port's own copies. Since v0.3.6, `_get_delta` deletes the
+bytes it just emitted (`del self._buffer[:end]`) so peak usage is the
+chunker-cadence window, not the full recording.
+
+### Auto-stop and Cancel (R3, R6)
+
+`stop_recording()` no longer runs `b"".join(self._audio_buffer)` on the
+audio thread; the join + `RecordingStoppedEvent` publish are scheduled
+on the asyncio loop. The Cancel hotkey is now wired to a new
+`Orchestrator.cancel()` that tracks and cancels the in-flight pipeline
+task, so a cancel landing before `_run_insertion` prevents insertion
+entirely. (Cancelling mid-`typewrite` cannot un-type — accepted
+limitation, documented in the parent proposal.)
 
 ### Compute type (quantization)
 

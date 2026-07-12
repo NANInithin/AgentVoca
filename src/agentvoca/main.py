@@ -285,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
         elif action == "cancel":
             logger.debug("Cancelling recording")
             audio.cancel_recording()
+            # R6: route the orchestrator cancel through the loop thread so it
+            # can interrupt the in-flight pipeline task at its next await
+            # (sync method, mirrors ``prepare_for_recording``).
+            loop_thread.call_soon(orchestrator.cancel)
             event_bus.publish(StateChangedEvent(previous="recording", current="idle"))
         elif action == "open_settings":
             open_settings()

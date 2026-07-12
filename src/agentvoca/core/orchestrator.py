@@ -139,6 +139,12 @@ class Orchestrator:
         self._stream_final_segment: Optional[TranscriptSegment] = None
         self._stream_final_event: asyncio.Event = asyncio.Event()
 
+        # ── v0.3.6 R6: tracked pipeline task (cancel target) ───────
+        # Wraps ``_run_pipeline`` so ``cancel()`` can interrupt the
+        # in-flight pipeline at its next await (instead of only
+        # starting pipelines that ignore the user's Cancel hotkey).
+        self._pipeline_task: Optional[asyncio.Task[None]] = None
+
         # ── v2 pipelined cleanup state (WB-04) ──────────────────────
         self._pipelined_cleanup_enabled: bool = False
         self._cleaned_segments: list[str] = []
@@ -534,6 +540,11 @@ class Orchestrator:
 
         This is the primary entry point into the pipeline. The audio layer
         emits ``RecordingStoppedEvent`` when the user stops recording.
+
+        R6: ``_run_pipeline`` runs as a tracked asyncio task so that
+        ``cancel()`` can interrupt it at its next await. ``finally`` still
+        runs the existing ``_reset_streaming_state`` so the next
+        dictation starts clean.
         """
         self._current_audio_bytes = event.audio_bytes
         self._current_sample_rate = event.sample_rate
@@ -551,7 +562,13 @@ class Orchestrator:
             if result.transitioned:
                 self._emit_state_change("recording", result.new_state)
 
-        await self._run_pipeline()
+        self._pipeline_task = asyncio.create_task(self._run_pipeline())
+        try:
+            await self._pipeline_task
+        except asyncio.CancelledError:
+            logger.info("Pipeline cancelled by user")
+        finally:
+            self._pipeline_task = None
 
     # ── Pipeline ─────────────────────────────────────────────────────
 
@@ -1034,6 +1051,26 @@ class Orchestrator:
         # v3: drop any screenshots left over from a prior/cancelled session.
         if self._screenshot_capturer is not None:
             self._screenshot_capturer.clear()
+
+    def cancel(self) -> None:
+        """Abort the current dictation: stream task, in-flight pipeline, state.
+
+        Runs on the loop thread (schedule via ``loop_thread.call_soon`` from
+        the Qt hotkey). Safe to call in any state; idempotent. Without
+        this, a Cancel hotkey fired (a) after a recording auto-stop leaves
+        an orphaned ``_stream_task`` publishing ghost partials until the
+        next dictation, and (b) while ``_run_pipeline`` is in flight does
+        nothing — the text still gets inserted (R6).
+        """
+        if self._pipeline_task is not None and not self._pipeline_task.done():
+            self._pipeline_task.cancel()
+        self._reset_streaming_state()  # also cancels _stream_task, drains queue
+        self._current_audio_bytes = None
+        self._current_transcript = None
+        if self._state_machine.state != "idle":
+            self._state_machine.reset("idle")
+        # Do NOT publish StateChangedEvent here — main.py's cancel branch
+        # already publishes one; a second would flicker the overlay.
 
     # ── Vocabulary and Snippets ─────────────────────────────────────
 

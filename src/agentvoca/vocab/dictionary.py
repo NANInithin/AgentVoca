@@ -100,6 +100,7 @@ class VocabularyDictionary:
         """
         self._terms: list[str] = []
         self._mappings: dict[str, str] = {}
+        self._casing: dict[str, str] = {}
 
         # Load from file if path is provided
         if path is not None:
@@ -109,7 +110,7 @@ class VocabularyDictionary:
         if terms is not None:
             self.add_terms(terms)
 
-        self._pattern = _build_pattern(self._terms)
+        self._rebuild()
 
     def _load_from_file(self, path: str | Path) -> None:
         lines = _read_vocab_file(path)
@@ -146,7 +147,15 @@ class VocabularyDictionary:
                 changed = True
 
         if changed:
-            self._pattern = _build_pattern(self._terms)
+            self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Recompile the match pattern and the casing lookup together."""
+        self._pattern = _build_pattern(self._terms)
+        casing: dict[str, str] = {}
+        for term in self._terms:
+            casing.setdefault(term.lower(), term)
+        self._casing = casing
 
     def add_mapping(self, wrong: str, right: str) -> None:
         """Add a mapping from a misrecognized term to a correct term.
@@ -163,15 +172,11 @@ class VocabularyDictionary:
         matched = match.group(1)
         lower = matched.lower()
 
-        # Check explicit mappings first
-        if lower in self._mappings:
-            return self._mappings[lower]
+        mapped = self._mappings.get(lower)
+        if mapped is not None:
+            return mapped
 
-        # Fallback to casing-preserving lookup
-        for term in self._terms:
-            if term.lower() == lower:
-                return term
-        return matched
+        return self._casing.get(lower, matched)
 
     def apply(self, text: str) -> str:
         """Apply vocabulary substitution to the given text.

@@ -1,0 +1,1 @@
+{"nodes": [{"id": "tests_fixtures_configs_valid_minimal", "label": "valid_minimal.yaml test fixture: minimal valid config (only asr.provider + asr.model)", "file_type": "document", "source_file": "tests/fixtures/configs/valid_minimal.yaml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

@@ -50,3 +50,15 @@ class HotkeyError(AgentVocaError):
 
 class VADError(AgentVocaError):
     """Raised when voice activity detection fails."""
+
+
+class ObserverError(AgentVocaError):
+    """Raised when the Observer subsystem fails to operate.
+
+    Used for store-side failures (writer thread cannot drain, schema
+    mismatch, missing root directory) and for lifecycle failures (a
+    session cannot be opened because one is already open, a join times
+    out, etc). The Observer subsystem is best-effort by design: an
+    ObserverError never propagates out of the hot path of the main
+    pipeline.
+    """

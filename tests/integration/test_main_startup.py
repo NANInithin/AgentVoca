@@ -112,6 +112,11 @@ def _install_fakes(monkeypatch, order: list[str], *, wizard_saves: bool = False)
         def stop(self) -> None:
             pass
 
+        def set_ambient_sink(self, sink) -> None:
+            # Track 2 calls this when constructing the ambient
+            # listener. The fake just records the call.
+            pass
+
     class FakeHotkeys:
         def __init__(self, *_a, **_k) -> None:
             pass
@@ -249,3 +254,39 @@ def test_existing_config_with_missing_api_key_does_not_crash(tmp_path: Path, mon
     assert "wizard.show" not in order
     # And the app still started on lenient defaults.
     assert "orchestrator.start" in order
+
+
+def test_observer_enabled_with_broken_ocr_degrades_gracefully(tmp_path: Path, monkeypatch) -> None:
+    """A broken OCR provider must not block app startup.
+
+    The wire-up in main.py wraps the entire capture-side construction
+    in a try/except; on any failure it falls back to
+    ``attach_capture(None, None, None, None, None)`` so the dictation
+    app still starts and Observer runs in disabled mode.
+    """
+    pytest.importorskip("PySide6", reason="PySide6 (Qt) not available")
+    import agentvoca.main as m  # noqa: PLC0415
+
+    order: list[str] = []
+    _install_fakes(monkeypatch, order, wizard_saves=False)
+
+    # Replace get_ocr with one that raises — the wire-up must catch it.
+    from agentvoca.core import registry as registry_module
+
+    def _boom_ocr(config):  # noqa: ARG001
+        raise RuntimeError("intentional OCR provider failure")
+
+    monkeypatch.setattr(registry_module.ProviderRegistry, "get_ocr", _boom_ocr)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "asr:\n  provider: faster_whisper\n  model: base\nobserver:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+
+    rc = m.main(["--config", str(config_path)])
+    assert rc == 0, "the app must start even when Observer construction fails"
+
+    # The dictation pipeline still came up.
+    assert "orchestrator.start" in order
+    assert "audio.start" in order

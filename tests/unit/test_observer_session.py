@@ -594,6 +594,12 @@ class TestMainStartupWithObserver:
             def stop(self) -> None:
                 pass
 
+            def set_ambient_sink(self, sink) -> None:
+                # Track 2 calls this when constructing the ambient
+                # listener. The fake just records the call; the test
+                # never exercises the sounddevice callback.
+                pass
+
         class FakeHotkeys:
             def __init__(self, *_a, **_k) -> None:
                 pass

@@ -11,11 +11,11 @@ result inserted directly at the cursor in the active application.
 
 - **Model-agnostic** — swap ASR or LLM providers with a one-line config change
 - **Local-first** — runs entirely offline with faster-whisper; no data leaves the machine
-- **Live streaming transcription** — partial text appears in the overlay as you speak _(v2)_
+- **Live streaming transcription** — partial text appears in the overlay as you speak _(v2/v0.3.6)_
 - **Context-aware formatting** — pick a cleanup style based on the active app _(v2)_
 - **Voice commands** — "new paragraph", "scratch that", and friends _(v2)_
-- **Adaptive vocabulary** — the app learns your corrections and applies them automatically _(v2)_
-- **Screenshot-to-text** — snip a region mid-dictation; a vision model turns it into markdown/text spliced into your dictation _(v3)_
+- **Adaptive vocabulary** — the app learns your corrections and applies them automatically _(v2/v0.3.6)_
+- **Screenshot-to-text** — snip a region mid-dictation; a vision model turns it into markdown/text spliced into your dictation _(v3/v0.3.6)_
 - **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are never mangled by the LLM
 - **Vocabulary substitution** — teach the app correct casing for your domain terms
 - **Snippet expansion** — expand short triggers into full phrases
@@ -23,9 +23,37 @@ result inserted directly at the cursor in the active application.
 - **Keyboard or clipboard insertion** with automatic fallback
 - **System tray** integration with overlay indicator
 
-> **v2 features are opt-in.** Each is an independent config flag that defaults to
+> **v2/v3 features are opt-in.** Each is an independent config flag that defaults to
 > off, so an existing v1 `config.yaml` keeps working unchanged. See
 > [What's new in v2](#whats-new-in-v2).
+
+---
+
+## What's new in v0.3.6
+
+The v0.3.6 release is a **performance, stability, and I/O reliability** pass. It
+does not add a new config setting or user-facing feature; instead, it makes the
+existing v2 streaming and v3 vision workflows smoother, faster, and more
+predictable.
+
+Highlights:
+
+- **Smoother audio capture:** VAD inference now runs on a dedicated worker thread,
+  and auto-stop finalization no longer blocks the audio callback.
+- **Lower streaming ASR memory churn:** Streaming partials now copy only the active
+  rolling window instead of repeatedly copying the full recording.
+- **Better Cancel behavior:** Cancel now aborts the in-flight pipeline and prevents
+  ghost partials or cancel-after-stop insertion.
+- **Faster vision sessions:** Multi-screenshot vision extraction now runs in
+  parallel while preserving screenshot order.
+- **More reliable cloud providers:** Cleanup and vision providers reuse HTTP
+  clients across dictations, with safe shutdown on hot-reload and app exit.
+- **Faster cold starts for cloud users:** Provider modules are imported lazily, so
+  cloud-provider users no longer import local ASR dependencies during startup.
+- **Better text handling:** OS input injection is serialized, vocabulary casing
+  lookup is faster, and adaptive vocabulary merges rebuild once per batch.
+
+See the full details in [RELEASE_NOTES-v0.3.6](docs/release_notes/RELEASE_NOTES-v0.3.6.md).
 
 ---
 
@@ -303,7 +331,7 @@ asr:
   model: base               # accurate final pass (inserted text)
   streaming: true
   streaming_model: base     # fast model for the live preview only
-  warm_up: true             # preloads models at startup (default)
+  warm_up: true             # preload models at startup; default is on
 ```
 
 **GPU note:** if you see `CUDA inference probe failed — switching to CPU` at startup,
@@ -317,6 +345,11 @@ asr:
   extra:
     device: cpu
 ```
+
+v0.3.6 also added a dedicated VAD worker, moved auto-stop finalization off the audio
+callback, and reduced streaming ASR memory churn. See
+[docs/performance.md](docs/performance.md) for the updated latency and memory-budget
+notes.
 
 For proper GPU acceleration, install the [CUDA Toolkit 12.x](https://developer.nvidia.com/cuda-toolkit).
 
@@ -382,7 +415,7 @@ vision:
   output_format: auto                      # auto | markdown | plain
 
 hotkeys:
-  capture_screenshot: ctrl+k
+  capture_screenshot: ctrl+shift+s
 ```
 
 While recording, press the capture hotkey to snip with your OS tool. Say an
@@ -405,9 +438,9 @@ Full details: [docs/vision.md](docs/vision.md).
 |---|---|
 | [docs/user-setup.md](docs/user-setup.md) | First-time setup using the interactive wizard _(v0.3.5)_ |
 | [docs/config-reference.md](docs/config-reference.md) | Every config key, type, default, and constraint |
-| [docs/performance.md](docs/performance.md) | Latency budgets, streaming/warm-up tuning, benchmark harness |
+| [docs/performance.md](docs/performance.md) | Latency budgets, v0.3.6 audio/ASR optimizations, streaming/warm-up tuning, benchmark harness |
 | [docs/context-and-commands.md](docs/context-and-commands.md) | Context profiles, voice commands, adaptive vocab, privacy |
-| [docs/vision.md](docs/vision.md) | Screenshot-to-text: capture, anchors, models, privacy _(v3)_ |
+| [docs/vision.md](docs/vision.md) | Screenshot-to-text: capture, anchors, models, privacy, and v0.3.6 parallel extraction _(v3)_ |
 | [docs/providers.md](docs/providers.md) | How to implement and register a new provider |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues and fixes |
 

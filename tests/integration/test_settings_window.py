@@ -21,11 +21,12 @@ from agentvoca.setup.controllers.config_controller import load_controller  # noq
 from agentvoca.setup.settings_window import SettingsWindow  # noqa: E402
 
 
-def test_window_constructs_with_eight_tabs(qapp, tmp_path: Path):
+def test_window_constructs_with_nine_tabs(qapp, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     controller = load_controller(config_path)
     window = SettingsWindow(controller)
-    assert window._tabs.count() == 8  # type: ignore[attr-defined]
+    # 8 existing tabs + 1 Observer tab added in v0.4.0.
+    assert window._tabs.count() == 9  # type: ignore[attr-defined]
     window.deleteLater()
 
 

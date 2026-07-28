@@ -170,6 +170,18 @@ ALL_ACTIONS: tuple[HotkeyAction, ...] = (
         label="Capture screenshot (vision)",
         description="Snip a region mid-dictation; the vision model extracts its text.",
     ),
+    # v0.4.0: Observer hotkeys. Always gated by observer.enabled; the
+    # hotkey string is validated by HotkeysConfig at config load.
+    HotkeyAction(
+        config_field="hotkeys.toggle_observer",
+        label="Toggle Observer session",
+        description="Start or stop a recording session. No-op if Observer is off.",
+    ),
+    HotkeyAction(
+        config_field="hotkeys.pause_observer",
+        label="Pause / resume Observer",
+        description="Suspend and resume capture inside an active session.",
+    ),
 )
 
 

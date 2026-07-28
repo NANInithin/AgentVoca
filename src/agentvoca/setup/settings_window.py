@@ -22,6 +22,7 @@ from agentvoca.setup.pages import (
     AudioPage,
     CleanupPage,
     HotkeysPage,
+    ObserverPage,
     VocabSnippetsPage,
     WelcomePage,
 )
@@ -93,6 +94,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
             HotkeysPage,
             VocabSnippetsPage,
             AdvancedPage,
+            ObserverPage,
         ):
             page = page_cls(self._controller)
             self._tabs.addTab(page, page.title)

@@ -22,6 +22,8 @@ class HotkeyEvent:
         "insert_last",
         "undo",
         "capture_screenshot",
+        "toggle_observer",
+        "pause_observer",
     ]
 
 
@@ -281,3 +283,108 @@ class TimingEvent:
 
     stage: str
     duration_ms: int
+
+
+# ── v0.4.0: Observer mode events ───────────────────────────────────
+# All six are declared here in a single commit even though Track 1 only
+# publishes two of them. The other tracks never open this file because
+# their events are already in place.
+
+
+@dataclass
+class ObserverSessionStartedEvent:
+    """Published when a session opens. Attributes: session_uuid, session_id, started_at_ms.
+
+    Attributes:
+        session_uuid: Stable external identifier for the session.
+        session_id: Owning row id in the sessions table.
+        started_at_ms: Unix epoch milliseconds the session was opened.
+    """
+
+    session_uuid: str
+    session_id: int
+    started_at_ms: int
+
+
+@dataclass
+class ObserverSessionEndedEvent:
+    """Published when a session closes, before compilation begins.
+
+    Attributes:
+        session_uuid: Stable external identifier for the session.
+        session_id: Owning row id in the sessions table.
+        duration_ms: Wall-clock duration of the session.
+        event_count: Number of timeline events stored in the session.
+    """
+
+    session_uuid: str
+    session_id: int
+    duration_ms: int
+    event_count: int
+
+
+@dataclass
+class ObserverPausedEvent:
+    """Published on pause/resume. ``paused`` False means resumed.
+
+    Attributes:
+        paused: True when capture is suspended, False when it has resumed.
+        reason: Why the state changed ("hotkey" | "excluded_app" | "disk_cap").
+    """
+
+    paused: bool
+    reason: str
+
+
+@dataclass
+class ObserverKeyframeEvent:
+    """Published when a keyframe is stored (before OCR completes).
+
+    Attributes:
+        event_id: Row id of the keyframe event in the events table.
+        trigger: The trigger that requested this keyframe; see TriggerReason.
+        app_name: Foreground app at capture time, or None if unknown.
+        deduped: True if the keyframe was dropped because it matched a
+            previous frame's perceptual hash.
+    """
+
+    event_id: int
+    trigger: str
+    app_name: Optional[str] = None
+    deduped: bool = False
+
+
+@dataclass
+class ObserverUtteranceEvent:
+    """Published when an utterance is transcribed and stored.
+
+    Attributes:
+        text: The transcribed text.
+        source: Where the utterance came from ("ambient" | "dictated").
+        duration_ms: Wall-clock duration of the utterance.
+    """
+
+    text: str
+    source: str
+    duration_ms: int
+
+
+@dataclass
+class ObserverCompiledEvent:
+    """Published when compilation finishes.
+
+    Attributes:
+        session_uuid: Stable external identifier for the session.
+        markdown_path: Path to the rendered markdown document.
+        json_path: Path to the JSON sidecar, or None when "json" is not
+            in compile.formats.
+        degraded: True if any block fell back to the rules rendering
+            because an LLM call failed.
+        latency_ms: Wall-clock duration of the compilation.
+    """
+
+    session_uuid: str
+    markdown_path: str
+    json_path: Optional[str]
+    degraded: bool
+    latency_ms: int

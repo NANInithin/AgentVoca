@@ -12,7 +12,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Optional
+from typing import Optional, Protocol
 
 import numpy as np
 import sounddevice as sd
@@ -25,6 +25,16 @@ from agentvoca.core.events import RecordingStoppedEvent
 from agentvoca.utils.errors import AudioError
 
 logger = logging.getLogger(__name__)
+
+
+class AmbientSink(Protocol):
+    """Receives every audio block, whether or not a dictation is active.
+
+    ``feed`` runs on the sounddevice callback thread and MUST return in
+    microseconds — a bounded ``put_nowait`` with drop-on-full and nothing else.
+    """
+
+    def feed(self, audio_bytes: bytes, timestamp_ms: int) -> None: ...
 
 
 class AudioCapture:
@@ -89,6 +99,12 @@ class AudioCapture:
         self._last_vad_speech: bool = True
         self._vad_thread: Optional[threading.Thread] = None
 
+        # ── v0.4.0 Observer: ambient tap (OBS-10) ────────────────────
+        # Runs before the ``_recording`` early-return so Observer hears
+        # the whole session, not just the dictations. Read once per
+        # callback to make a concurrent ``set_ambient_sink`` swap safe.
+        self._ambient_sink: AmbientSink | None = None
+
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -147,6 +163,14 @@ class AudioCapture:
             self._vad_queue.put(None)
             self._vad_thread.join(timeout=2.0)
             self._vad_thread = None
+
+    def set_ambient_sink(self, sink: "AmbientSink | None") -> None:
+        """Install or remove the ambient tap (v0.4.0 Observer).
+
+        Assignment is a single GIL-atomic store, so this is safe to call from
+        the Qt thread while the audio callback is running.
+        """
+        self._ambient_sink = sink
 
     # ── Recording Control ──────────────────────────────────────────────
 
@@ -252,11 +276,24 @@ class AudioCapture:
         if status:
             logger.debug("Audio callback status: %s", status)
 
-        if not self._recording:
-            return
-
         audio_bytes = indata.tobytes()
         timestamp_ms = int(time.time() * 1000)
+
+        # v0.4.0: ambient tap. Runs regardless of dictation state so Observer
+        # hears the whole session. Read the reference once — set_ambient_sink
+        # may swap it concurrently from the Qt thread.
+        sink = self._ambient_sink
+        if sink is not None:
+            try:
+                sink.feed(audio_bytes, timestamp_ms)
+            except Exception:
+                # An Observer bug must never take down the microphone. Log at
+                # DEBUG with rate limiting by counting occurrences lazily —
+                # the cheapest possible protection on this hot path.
+                logger.debug("Ambient sink raised; continuing", exc_info=True)
+
+        if not self._recording:
+            return
 
         self._audio_buffer.append(audio_bytes)
 

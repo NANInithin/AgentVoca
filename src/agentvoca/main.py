@@ -19,6 +19,7 @@ from agentvoca.app.overlay import StatusOverlay
 from agentvoca.app.tray import TrayApp
 from agentvoca.audio.capture import AudioCapture
 from agentvoca.audio.chunker import AudioChunker
+from agentvoca.audio.vad import VAD
 from agentvoca.capture.screenshot import ScreenshotCapturer
 from agentvoca.config.loader import load_config_lenient
 from agentvoca.config.schema import ASRConfig, FullConfig
@@ -358,11 +359,29 @@ def main(argv: list[str] | None = None) -> int:
                 cfg.asr.streaming_window_s,
             )
 
+        # OBS-0: construct a VAD when the user opted in. Fail-open: any failure
+        # logs a warning and leaves vad=None, which is exactly today's behavior
+        # (no auto-stop; recording ends only on max_recording_duration_s).
+        vad: VAD | None = None
+        if cfg.audio.vad_enabled:
+            try:
+                vad = VAD(
+                    event_bus=event_bus,
+                    sample_rate=cfg.audio.sample_rate,
+                )
+                if not vad.is_available:
+                    logger.warning("VAD requested but silero is unavailable — auto-stop disabled")
+                    vad = None
+            except Exception:
+                logger.exception("VAD initialization failed — continuing without auto-stop")
+                vad = None
+
         audio = AudioCapture(
             event_bus=event_bus,
             sample_rate=cfg.audio.sample_rate,
             channels=cfg.audio.channels,
             device_name=cfg.audio.input_device,
+            vad=vad,
             silence_timeout_ms=cfg.audio.silence_timeout_ms,
             max_duration_s=cfg.audio.max_recording_duration_s,
             chunker=chunker,

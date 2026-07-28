@@ -316,9 +316,7 @@ class OpenAICompatibleCompiler(SessionCompiler):
         header = rules_full.markdown.split("---\n\n", 1)[0]
         body = "\n\n---\n\n".join(block_markdowns)
         degraded_note = (
-            "degraded: some blocks used rules rendering"
-            if any_degraded
-            else "LLM summarization"
+            "degraded: some blocks used rules rendering" if any_degraded else "LLM summarization"
         )
         footer = (
             f"*Compiled by AgentVoca v0.4.0 \u00b7 "

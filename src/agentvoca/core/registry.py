@@ -98,6 +98,12 @@ class ProviderRegistry:
         )
         # v0.4.0 Observer OCR providers — registered by Track 2
         # v0.4.0 Observer compilers — registered by Track 3
+        self.register_compiler("rules", "agentvoca.observer.compile.rules:RulesCompiler")
+        self.register_compiler(
+            "openai_compatible",
+            "agentvoca.observer.compile.openai_compatible:OpenAICompatibleCompiler",
+        )
+        self.register_compiler("none", "agentvoca.observer.compile.none:NoneCompiler")
 
     def _resolve(self, entry: _ProviderEntry) -> type:
         """Resolve a lazily-registered ``"module:Class"`` path to a class."""

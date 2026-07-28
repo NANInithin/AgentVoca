@@ -27,6 +27,9 @@ dependencies = [
     # v0.4.0 Observer OCR: local ONNX default. Rides the onnxruntime
     # already pulled in transitively by silero-vad.
     "rapidocr-onnxruntime>=1.4.0",
+    # v0.4.0 Observer selection (Windows UI Automation). Only installed
+    # on Windows; macOS/Linux skip it.
+    "comtypes>=1.4.0 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

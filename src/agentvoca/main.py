@@ -59,13 +59,20 @@ def _build_registry() -> ProviderRegistry:
         logger.debug("Registered insertion strategy: %s", name)
     for name in registry.list_vision():
         logger.debug("Registered vision provider: %s", name)
+    for name in registry.list_ocr():
+        logger.debug("Registered Observer OCR provider: %s", name)
+    for name in registry.list_compiler():
+        logger.debug("Registered Observer compiler: %s", name)
 
     logger.info(
-        "Provider registry initialized: %d ASR, %d cleanup, %d insertion, %d vision",
+        "Provider registry initialized: %d ASR, %d cleanup, %d insertion, %d vision, "
+        "%d Observer OCR, %d Observer compiler",
         len(registry.list_asr()),
         len(registry.list_cleanup()),
         len(registry.list_insertion()),
         len(registry.list_vision()),
+        len(registry.list_ocr()),
+        len(registry.list_compiler()),
     )
     return registry
 

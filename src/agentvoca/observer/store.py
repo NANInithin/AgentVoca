@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
 import uuid as uuid_lib
 from dataclasses import dataclass, field
@@ -148,10 +151,14 @@ class ObserverStore:
         self._last_ts_ms: dict[int, int] = {}
         # Guard for tests: stop() called without start() should not raise.
         self._lock = threading.Lock()
+        # Guarded so directory hardening runs once per ObserverStore lifetime,
+        # not once per start() call (start() is idempotent and may run again
+        # after a stop). Tests rely on the guard to avoid double-hardening
+        # when the same store is restarted on the same directory.
+        self._hardened = False
         # Read connections are short-lived per call. ``_ro_conn_uri`` is the
         # ``file:...?mode=ro`` URI sqlite3 opens read-only.
         self._ro_conn_uri = f"file:{self._db_path}?mode=ro"
-        self._ro_conn_uri_unfinalized = f"file:{self._db_path}?mode=ro"
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -159,7 +166,8 @@ class ObserverStore:
         """Open the DB, apply the schema, start the writer thread.
 
         Idempotent. Creates ``<root>`` if it does not exist, along with
-        the ``blobs/`` and ``exports/`` subdirectories.
+        the ``blobs/`` and ``exports/`` subdirectories. Also hardens the
+        directory ACL on the first call (D12) — see ``_harden_directory``.
         """
         with self._lock:
             if self._started:
@@ -167,6 +175,9 @@ class ObserverStore:
             self._root.mkdir(parents=True, exist_ok=True)
             self._blobs.mkdir(parents=True, exist_ok=True)
             self._exports.mkdir(parents=True, exist_ok=True)
+            if not self._hardened:
+                _harden_directory(self._root)
+                self._hardened = True
             # The actual schema apply happens inside the writer thread so
             # the connection that opened the DB is the one that owns it.
             self._writer = threading.Thread(
@@ -727,6 +738,70 @@ def _now_ms() -> int:
     import time
 
     return int(time.time() * 1000)
+
+
+# ── D12: directory ACL hardening ───────────────────────────────────
+# No encryption at rest (D12) — plaintext under a user-only ACL. This is
+# the *only* access control the storage directory gets. A failure to
+# harden logs a warning and never raises; the user is told in
+# docs/observer.md that the archive is stored in plaintext, so a failure
+# here degrades an already-documented protection rather than breaking a
+# promise the app made.
+#
+# Windows: strip inherited ACLs, grant the current user full control.
+#   icacls <path> /inheritance:r /grant:r "%USERNAME%":(OI)(CI)F
+# POSIX:   chmod 0o700.
+#
+# Applied to the root only. ``blobs/`` and ``exports/`` inherit. Run
+# once per store lifetime (gated by ``ObserverStore._hardened``).
+
+
+def _harden_directory(path: Path) -> None:
+    """Restrict ``path`` to the current user (Windows) or 0o700 (POSIX).
+
+    Best-effort: a failure is logged at WARNING and never raises.
+    """
+    try:
+        if sys.platform == "win32":
+            username = os.environ.get("USERNAME")
+            if not username:
+                logger.warning(
+                    "Could not harden observer storage at %s: USERNAME env var is unset",
+                    path,
+                )
+                return
+            # /inheritance:r strips inherited ACLs from the path and
+            # contents; /grant:r grants the named user full control
+            # (F) on this object and new child objects ((OI)(CI)).
+            # We use a list-form argv (no shell) and ignore the exit
+            # code so a missing icacls.exe or a non-NTFS volume does
+            # not block startup.
+            try:
+                subprocess.run(
+                    [
+                        "icacls",
+                        str(path),
+                        "/inheritance:r",
+                        "/grant:r",
+                        f"{username}:(OI)(CI)F",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    timeout=15.0,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                logger.warning(
+                    "icacls failed to harden %s: %s (continuing with default ACL)",
+                    path,
+                    exc,
+                )
+        else:
+            # POSIX. 0o700 = rwx for owner, nothing for group/other.
+            os.chmod(path, 0o700)
+    except OSError as exc:
+        # chmod can raise on read-only filesystems or unsupported
+        # platforms (e.g. Windows under WSL). We log and continue.
+        logger.warning("Could not harden observer storage at %s: %s (continuing)", path, exc)
 
 
 # Re-export the event-kind literal so callers can ``from observer.store import EventKind`` if

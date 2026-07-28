@@ -41,6 +41,119 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONFIG_PATH = Path.home() / ".agentvoca" / "config.yaml"
 
 
+def _show_observer_recovery_dialog(
+    observer_controller: object,
+    sessions: list[object],
+    tray: "TrayApp",
+) -> None:
+    """Show a non-modal dialog for each recovered Observer session.
+
+    The dialog asks the user what to do with sessions left
+    ``status='open'`` by a previous process. Three actions per
+    session:
+
+    * Compile it — mark the session ``closed`` and run compilation.
+    * Keep for later — leave the session ``open``; ask again next launch.
+    * Delete — ``purge_session``.
+
+    Non-modal so the user can keep working while the dialog is up.
+    """
+    from PySide6 import QtCore, QtWidgets  # noqa: PLC0415
+
+    from agentvoca.core.events import ObserverCompiledEvent  # noqa: PLC0415
+    from agentvoca.observer.models import ObserverSession  # noqa: PLC0415
+
+    for session in sessions:
+        assert isinstance(session, ObserverSession)
+
+        dialog = QtWidgets.QDialog()
+        dialog.setWindowTitle("Unfinished Observer session")
+        dialog.setModal(False)
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        started = session.started_at_ms or 0
+        ended = session.ended_at_ms
+        duration_ms = (ended - started) if ended and started else 0
+        hours, rem = divmod(duration_ms // 60_000, 60)
+        minutes = rem
+        when = QtCore.QDateTime.fromMSecsSinceEpoch(started).toString("yyyy-MM-dd HH:mm")
+        if duration_ms:
+            duration_text = f"{hours} h {minutes} m" if hours else f"{minutes} m"
+        else:
+            duration_text = "?"
+        msg = QtWidgets.QLabel(
+            f"AgentVoca found 1 unfinished Observer session from {when} "
+            f"({duration_text}).\n\nWhat would you like to do with it?"
+        )
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+
+        button_row = QtWidgets.QHBoxLayout()
+        compile_btn = QtWidgets.QPushButton("Compile it")
+        keep_btn = QtWidgets.QPushButton("Keep for later")
+        delete_btn = QtWidgets.QPushButton("Delete")
+        button_row.addWidget(compile_btn)
+        button_row.addWidget(keep_btn)
+        button_row.addStretch()
+        button_row.addWidget(delete_btn)
+        layout.addLayout(button_row)
+
+        store = getattr(observer_controller, "_store", None)
+        compiler = getattr(observer_controller, "_compiler", None)
+        loop = getattr(observer_controller, "_loop", None)
+
+        def _on_compile() -> None:
+            if store is None or compiler is None or loop is None:
+                return
+            try:
+                store.close_session(
+                    session.id, ended_at_ms=int(QtCore.QDateTime.currentMSecsSinceEpoch())
+                )
+            except Exception:
+                logger.exception("Failed to mark session %d as closed", session.id)
+            try:
+                import asyncio  # noqa: PLC0415
+
+                asyncio.run_coroutine_threadsafe(
+                    getattr(observer_controller, "_run_compile")(session_id=session.id),
+                    loop,
+                )
+            except Exception:
+                logger.exception("Failed to schedule compile for session %d", session.id)
+            try:
+                tray.show_message(
+                    "Observer session compiled",
+                    f"Recompiling recovered session {when}",
+                    icon=0,
+                )
+            except Exception:
+                pass
+            dialog.accept()
+
+        def _on_keep() -> None:
+            # Leave status='open'; the dialog asks again next launch.
+            dialog.accept()
+
+        def _on_delete() -> None:
+            if store is None:
+                dialog.accept()
+                return
+            try:
+                store.purge_session(session.id)
+            except Exception:
+                logger.exception("Failed to purge session %d", session.id)
+            dialog.accept()
+
+        compile_btn.clicked.connect(_on_compile)
+        keep_btn.clicked.connect(_on_keep)
+        delete_btn.clicked.connect(_on_delete)
+        # Avoid an unused-import warning; the type is referenced via isinstance.
+        del ObserverCompiledEvent
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+
 def _build_registry() -> ProviderRegistry:
     """Build the provider registry with all built-in providers.
 
@@ -463,7 +576,40 @@ def main(argv: list[str] | None = None) -> int:
             # TRACK 2 REPLACES THIS LINE:
             observer_controller.attach_capture(None, None, None, None, None)
             # TRACK 3 REPLACES THIS LINE:
-            observer_controller.attach_surface(None, None, None)
+            # Construct the compiler (registry-resolved), the exporter
+            # coordinator (which finds the session bundle at compile
+            # time), and the on-screen ``ObserverIndicator``. A broken
+            # compiler (e.g. an unregistered provider name) must not
+            # stop the app or stop *recording* \u2014 we degrade to
+            # attach_surface(None, None, None) so the session can
+            # still be opened and a later recompile can recover.
+            try:
+                from agentvoca.app.overlay import ObserverIndicator  # noqa: PLC0415
+                from agentvoca.observer.compile.base import SessionCompiler  # noqa: PLC0415
+                from agentvoca.observer.export.coordinator import (  # noqa: PLC0415
+                    ExporterCoordinator,
+                )
+
+                try:
+                    compiler: SessionCompiler | None = registry.get_compiler(cfg.observer.compile)
+                except Exception:
+                    logger.exception(
+                        "Observer compiler '%s' could not be constructed; "
+                        "sessions will not be compiled automatically",
+                        cfg.observer.compile.provider,
+                    )
+                    compiler = None
+
+                coordinator = ExporterCoordinator(
+                    store=observer_store,
+                    formats=list(cfg.observer.compile.formats),
+                    out_dir=Path(cfg.observer.compile.output_dir).expanduser(),
+                )
+                indicator = ObserverIndicator(event_bus)
+                observer_controller.attach_surface(compiler, [coordinator], indicator)
+            except Exception:
+                logger.exception("Failed to attach Observer surface; degrading to no-compile")
+                observer_controller.attach_surface(None, None, None)
         return True
 
     # ── First-run gate ────────────────────────────────────────────────
@@ -499,6 +645,15 @@ def main(argv: list[str] | None = None) -> int:
     if not _build_and_start_pipeline(config):
         loop_thread.stop()
         return 1
+
+    # v0.4.0: Observer crash recovery. Sessions left ``status='open'``
+    # by a previous process are recovered here, after the pipeline is
+    # up, so the dialog never blocks startup. Non-modal, follows the
+    # wizard's show/raise/activate pattern.
+    if observer_controller is not None:
+        recoverable = observer_controller.recover_sessions()
+        if recoverable:
+            _show_observer_recovery_dialog(observer_controller, recoverable, tray)
 
     # On normal non-first-run launches, auto-open the wizard non-blocking (if
     # the user has not opted out). Skipped when we already showed a modal wizard

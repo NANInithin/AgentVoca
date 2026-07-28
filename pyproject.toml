@@ -24,6 +24,9 @@ dependencies = [
     "pillow>=10.0.0",
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12>=9.23.0.39",
+    # v0.4.0 Observer OCR: local ONNX default. Rides the onnxruntime
+    # already pulled in transitively by silero-vad.
+    "rapidocr-onnxruntime>=1.4.0",
 ]
 
 [dependency-groups]

@@ -254,3 +254,112 @@ Learn corrections and auto-apply them. Off by default.
 See [config.example.yaml](../config.example.yaml) and the per-provider examples in
 [examples/](../examples/), including [config.streaming.yaml](../examples/config.streaming.yaml)
 for the full v2 feature set.
+
+---
+
+## observer _(v0.4.0)_
+
+Observer mode records a working session — what you said, what was
+on screen, what you highlighted — and compiles it at the end into a
+readable markdown document plus a machine-readable JSON sidecar.
+
+See [observer.md](observer.md) for the full feature description,
+privacy disclosure, and troubleshooting.
+
+The block is fully additive. An existing `config.yaml` without an
+`observer:` key loads unchanged with `enabled = false`.
+
+### observer.enabled
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Master switch. Must be true to start a session. |
+
+### observer.storage
+
+| Key | Type | Default | Constraint | Description |
+|---|---|---|---|---|
+| `dir` | string | `~/.agentvoca/observer` | — | Root directory. Stored as written; expanded at use time. |
+| `retention_days` | int | `7` | `>= 0` (0 disables purge) | Sessions older than this are purged at startup. |
+| `max_session_mb` | int | `500` | `1..10000` | Per-session blob cap; capture stops once exceeded. |
+
+### observer.triggers
+
+| Key | Type | Default | Constraint | Description |
+|---|---|---|---|---|
+| `window_change` | bool | `true` | — | Capture when foreground window changes. |
+| `scroll_settle` | bool | `true` | — | Capture after scrolling settles. |
+| `click_selection` | bool | `true` | — | Capture on click / selection release. |
+| `speech_onset` | bool | `true` | — | Capture on speech onset (D9 — the trigger that grounds an utterance to a screen). |
+| `scroll_settle_ms` | int | `600` | `100..5000` | Quiet period before a scroll is considered "settled". |
+| `min_interval_ms` | int | `4000` | `500..60000` | Minimum time between two keyframes. |
+| `max_keyframes_per_min` | int | `4` | `1..60` | Token-bucket cap on the keyframe rate. |
+
+### observer.screen
+
+| Key | Type | Default | Constraint | Description |
+|---|---|---|---|---|
+| `scope` | string | `active_window` | must be `active_window` in v0.4.0 | What to capture. |
+| `max_width_px` | int | `1280` | `640..3840` | Downscale target. |
+| `jpeg_quality` | int | `75` | `40..95` | JPEG encoder quality. |
+| `dedup_phash_distance` | int | `6` | `0..32` (0 disables) | Perceptual-hash dedup threshold. |
+
+### observer.ocr
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `provider` | string | `rapidocr` | `rapidocr`, `openai_compatible`, or `none`. |
+| `endpoint` | string | `null` | Required for `openai_compatible`. |
+| `api_key_env` | string | `null` | Name of the env var holding the API key (not the key itself). |
+| `model` | string | `null` | Provider-specific model name. |
+| `max_queue` | int | `32` | OCR queue size, `4..256`. |
+
+### observer.selection
+
+| Key | Type | Default | Constraint | Description |
+|---|---|---|---|---|
+| `enabled` | bool | `true` | — | Master switch. |
+| `method` | string | `uia` | `uia`, `ocr_rect`, `none` | How to read the current selection. |
+| `max_chars` | int | `4000` | `100..100000` | Truncate selections to this many characters. |
+
+### observer.compile
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `provider` | string | `rules` | `rules` (offline), `openai_compatible` (LLM), `none` (raw dump). |
+| `endpoint` | string | `null` | Required for `openai_compatible`. |
+| `api_key_env` | string | `null` | Name of the env var holding the API key. |
+| `model` | string | `null` | Provider-specific model name. |
+| `formats` | list[string] | `[markdown, json]` | Subset of `{markdown, json}`, non-empty. |
+| `output_dir` | string | `<observer.storage.dir>/exports` | Where to write the markdown + JSON. |
+
+### observer.privacy
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `exclude_apps` | list[string] | see below | Glob patterns, case-insensitive. When matched, Observer pauses. |
+| `exclude_title_patterns` | list[string] | see below | Glob patterns, case-insensitive. When matched, Observer pauses. |
+
+Default exclusion lists:
+
+```python
+_DEFAULT_EXCLUDE_APPS = [
+    "1Password.exe", "KeePass.exe", "KeePassXC.exe", "Bitwarden.exe",
+    "Signal.exe", "Dashlane.exe", "LastPass.exe",
+]
+_DEFAULT_EXCLUDE_TITLES = [
+    "*InPrivate*", "*Incognito*", "*Private Browsing*", "*Password*",
+]
+```
+
+### hotkeys _(v0.4.0)_
+
+Two new hotkey fields let you bind Observer actions. The
+host app does not require these to be set; if a hotkey is `null`
+or `(disabled)` in the UI, the corresponding action can still be
+reached from the tray menu.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `hotkeys.toggle_observer` | string | `null` | Toggle a session (start if none, stop otherwise). |
+| `hotkeys.pause_observer` | string | `null` | Toggle the pause state of the active session. |

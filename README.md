@@ -16,6 +16,7 @@ result inserted directly at the cursor in the active application.
 - **Voice commands** — "new paragraph", "scratch that", and friends _(v2)_
 - **Adaptive vocabulary** — the app learns your corrections and applies them automatically _(v2/v0.3.6)_
 - **Screenshot-to-text** — snip a region mid-dictation; a vision model turns it into markdown/text spliced into your dictation _(v3/v0.3.6)_
+- **Observer mode** — record a working session (microphone + keyframes + selections), compile to a readable markdown document and a v0.5.0-facing JSON sidecar at the end _(v0.4.0)_
 - **Technical text preservation** — code identifiers, URLs, file paths, and CLI flags are never mangled by the LLM
 - **Vocabulary substitution** — teach the app correct casing for your domain terms
 - **Snippet expansion** — expand short triggers into full phrases
@@ -23,9 +24,52 @@ result inserted directly at the cursor in the active application.
 - **Keyboard or clipboard insertion** with automatic fallback
 - **System tray** integration with overlay indicator
 
-> **v2/v3 features are opt-in.** Each is an independent config flag that defaults to
+> **v2/v3/v0.4.0 features are opt-in.** Each is an independent config flag that defaults to
 > off, so an existing v1 `config.yaml` keeps working unchanged. See
-> [What's new in v2](#whats-new-in-v2).
+> [What's new in v0.4.0](#whats-new-in-v040).
+
+---
+
+## What's new in v0.4.0
+
+v0.4.0 ships **Observer mode** — a background session recorder
+that turns what you said, what was on screen, and what you
+highlighted into a readable markdown document and a machine-readable
+JSON sidecar at the end.
+
+Highlights:
+
+- **Zero-config default.** `compile.provider: rules` produces a
+  useful markdown artifact with no API key, exactly like
+  `cleanup.provider: rules` does today.
+- **Local OCR by default.** RapidOCR (ONNX) ships with the app
+  via the `onnxruntime` already in the lockfile. No new model
+  download for offline users.
+- **Visible consent surface.** A non-dismissable on-screen badge
+  and a red tray icon are visible for the entire session; the
+  user can never forget it is on.
+- **Privacy by default.** Off by default, an exclusion list for
+  password managers and incognito windows, a pause / resume
+  hotkey, and a 7-day retention purge.
+- **Crash recovery.** Sessions left `status='open'` by a crashed
+  process are recovered on next launch with a non-modal dialog
+  offering compile / keep / delete.
+- **Bug fix included.** OBS-0 wires VAD into `AudioCapture`, which
+  fixes `app.mode: auto_stop` (it has silently never worked since
+  v0.3.0).
+
+Observer is **offline by default**. Choosing an
+`openai_compatible` OCR or compiler provider sends screen content
+and transcripts to that endpoint; the settings UI says so plainly
+at the point of choice.
+
+See the full details in [RELEASE_NOTES-v0.4.0](docs/release_notes/RELEASE_NOTES-v0.4.0.md)
+and the user-facing guide in [docs/observer.md](docs/observer.md).
+
+> **Agent mode is NOT in this release.** It is v0.5.0. Observer's
+> JSON sidecar is the contract Agent will consume; nothing in
+> Observer executes a task, writes a file on your behalf, or calls
+> a tool.
 
 ---
 

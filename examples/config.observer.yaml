@@ -1,0 +1,100 @@
+# AgentVoca v0.4.0 — Observer mode example
+#
+# A complete, working, fully-offline Observer config. No API key
+# required. Copy to ~/.agentvoca/config.yaml and edit.
+#
+# What this enables:
+#   * Every spoken line during a session is transcribed by the
+#     already-configured ASR provider (the local faster_whisper
+#     block below; swap for any other provider you have configured).
+#   * Screen keyframes are captured at four trigger sources, capped
+#     at 4 per minute, and deduped by perceptual hash before OCR.
+#   * OCR runs locally with RapidOCR (ONNX).
+#   * Compilation is the rules engine: deterministic, no network,
+#     produces a readable markdown document and a JSON sidecar.
+#
+# Privacy:
+#   * The session archive is written in plaintext to
+#     ~/.agentvoca/observer/ (user-only ACL on Windows).
+#   * Sessions older than 7 days are purged at startup.
+#   * Adjust exclude_apps / exclude_title_patterns below to keep
+#     sensitive apps out of the recording.
+#
+# See docs/observer.md for the full feature description.
+
+app:
+  profile: standard
+  language: auto
+  mode: toggle
+
+audio:
+  sample_rate: 16000
+  vad_enabled: true
+  silence_timeout_ms: 900
+
+asr:
+  provider: faster_whisper
+  model: base
+
+# v0.4.0 — Observer mode.
+observer:
+  enabled: true
+
+  storage:
+    dir: ~/.agentvoca/observer
+    retention_days: 7
+    max_session_mb: 500
+
+  triggers:
+    # Each trigger is independently toggleable.
+    window_change: true
+    scroll_settle: true
+    click_selection: true
+    speech_onset: true              # D9 — flag to owner
+    scroll_settle_ms: 600
+    min_interval_ms: 4000
+    max_keyframes_per_min: 4
+
+  screen:
+    scope: active_window            # only the focused window
+    max_width_px: 1280
+    jpeg_quality: 75
+    dedup_phash_distance: 6
+
+  ocr:
+    provider: rapidocr              # local ONNX
+    max_queue: 32
+    # endpoint / api_key_env / model are only required for
+    # provider: openai_compatible.
+
+  selection:
+    enabled: true
+    method: uia                     # Windows UI Automation
+    max_chars: 4000
+
+  compile:
+    provider: rules                # offline, no API key
+    formats: [markdown, json]
+    output_dir: ~/.agentvoca/observer/exports
+
+  privacy:
+    exclude_apps:
+      - 1Password.exe
+      - KeePass.exe
+      - KeePassXC.exe
+      - Bitwarden.exe
+      - Signal.exe
+      - Dashlane.exe
+      - LastPass.exe
+    exclude_title_patterns:
+      - "*InPrivate*"
+      - "*Incognito*"
+      - "*Private Browsing*"
+      - "*Password*"
+
+# Optional: bind the two Observer hotkeys. The values must match
+# the hotkey format HotkeyManager accepts (ctrl+shift+o etc).
+# Leave null to control Observer from the tray menu only.
+hotkeys:
+  toggle_observer: ctrl+shift+o
+  pause_observer: ctrl+shift+p

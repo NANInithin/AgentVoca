@@ -135,6 +135,7 @@ def _make_uia_reader(
 
     _install_fake_comtypes(monkeypatch, automation)
     reader = WindowsUIASelectionReader(max_chars=max_chars, timeout_ms=timeout_ms)
+
     # Tear down the executor on test exit so its worker thread does
     # not leak (and never blocks the next test by being the first to
     # try to import real comtypes).

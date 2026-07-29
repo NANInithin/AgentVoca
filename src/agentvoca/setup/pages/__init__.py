@@ -13,6 +13,7 @@ from agentvoca.setup.pages.base import ConfigPage
 from agentvoca.setup.pages.cleanup_page import CleanupPage
 from agentvoca.setup.pages.finish_page import FinishPage
 from agentvoca.setup.pages.hotkeys_page import HotkeysPage
+from agentvoca.setup.pages.observer_page import ObserverPage
 from agentvoca.setup.pages.vocab_snippets_page import VocabSnippetsPage
 from agentvoca.setup.pages.welcome import WelcomePage
 
@@ -25,6 +26,7 @@ __all__ = [
     "ConfigPage",
     "FinishPage",
     "HotkeysPage",
+    "ObserverPage",
     "VocabSnippetsPage",
     "WelcomePage",
 ]

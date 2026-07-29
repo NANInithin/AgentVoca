@@ -195,3 +195,58 @@ Per-stage timing is emitted as `TimingEvent` on the event bus for **every**
 dictation cycle and written to the log (`~/.agentvoca/agentvoca.log`). Run with
 `--debug` to see stage timings live. If a stage is slow, the log tells you
 which one before you start guessing.
+
+---
+
+## Observer resource budget (v0.4.0)
+
+The Observer subsystem is a background process, so it has its own
+resource envelope on top of the dictation pipeline. The numbers
+below are the **hard acceptance gate** for a session running on a
+4-core laptop with the default config.
+
+| Metric | Budget | What moves it |
+|---|---|---|
+| Added idle CPU while a session is open | **< 5 %** | Foreground poll (2 Hz), token-bucket keyframe cap, phash dedup *before* OCR |
+| Added RSS while a session is open | **< 400 MB** | Single shared ASR model, bounded queues, JPEG-on-write |
+| Sustained keyframes | **≤ 4 / minute** | `observer.triggers.max_keyframes_per_min` |
+| Audio callback p99 | unchanged (< 5 ms) | The ambient tap is one `put_nowait` + `except Full: pass` — nothing else |
+| Disk per hour, typical | < 40 MB | 1280 px JPEG q75, deduped, ~4/min |
+
+### Tuning knobs
+
+If the budget is breached on a particular machine, the right
+response is to reduce the capture rate, **never** to exceed the
+budget.
+
+| Knob | Effect |
+|---|---|
+| `observer.triggers.max_keyframes_per_min` | Token-bucket cap; lower for fewer keyframes. |
+| `observer.triggers.min_interval_ms` | Minimum time between two keyframes; raise for fewer. |
+| `observer.triggers.scroll_settle_ms` | Quiet period before a scroll counts as "settled". |
+| `observer.triggers.speech_onset` | The most valuable trigger; turning it off roughly halves the keyframe rate. |
+| `observer.ocr.provider` | `none` skips OCR entirely (saves ~50–150 ms/keyframe and OCR memory). |
+| `observer.ocr.max_queue` | Bounded OCR queue; overflow drops the oldest. |
+| `observer.screen.max_width_px` | Smaller images encode/decode faster; below 1280 OCR accuracy suffers. |
+| `observer.screen.dedup_phash_distance` | Raise to dedup more aggressively; lower to let through more. |
+| `observer.compile.provider` | `rules` is offline; `openai_compatible` adds a per-block LLM round-trip. |
+
+### What the numbers do not cover
+
+- A long session can fill the per-session disk cap
+  (`observer.storage.max_session_mb`, default 500 MB). Once hit,
+  keyframe capture stops, a `gap` is recorded, and audio continues.
+- The `openai_compatible` compiler is network-bound. A 30-block
+  session is 30 parallel LLM calls + 1 session-summary call. The
+  budget assumes a fast network; on a slow network the compile
+  latency grows linearly with the number of blocks, but the
+  per-block degradation contract means a failed call falls back to
+  the rules render for that block, so a partial network failure
+  never blocks the artifact.
+
+### Crash-recovery cost
+
+On startup, the controller queries the store for sessions left
+`status='open'`. The query is a single indexed SELECT and
+completes in < 5 ms. The recovery dialog is non-modal and does not
+block startup.

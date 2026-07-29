@@ -1,17 +1,21 @@
 """Bundle-aware exporter coordinator (Track 3, OBS-28).
 
-The ``ObserverController._run_compile`` coroutine calls each item in
-its ``_exporters`` list with the compiled session only. The
-concrete exporters (markdown / json sidecar) need the session bundle
-too, to read the session uuid and rebuild the JSON ``blocks[]``.
+The concrete exporters (markdown / json sidecar) are constructed with
+the ``SessionBundle`` they are about to write, because they need the
+session uuid for the output path and the events to rebuild the JSON
+``blocks[]``. The coordinator builds them per-session and runs them.
 
-The coordinator wraps the per-format factory and, on every
-``export()`` call from the controller, finds the most recently
-closed session and constructs the real exporters for that bundle.
+``ObserverController._run_compile`` passes the bundle it already
+loaded via the required ``bundle`` keyword. It is deliberately
+required rather than optional: an earlier revision let the
+coordinator fall back to ``store.list_sessions(limit=1)`` when the
+bundle was absent, which silently exported the wrong session whenever
+a newer session had been opened between close and compile. Guessing
+is not an acceptable fallback here — a wrong export looks correct.
 
 A single coordinator is passed to ``attach_surface``; the controller
-sees it as a list of one opaque object, the same way it sees
-plain exporters.
+sees it as a list of one opaque object, the same way it sees plain
+exporters, and dispatches on the ``accepts_bundle`` flag below.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
-    from agentvoca.observer.models import CompiledSession
+    from agentvoca.observer.models import CompiledSession, SessionBundle
     from agentvoca.observer.store import ObserverStore
 
 logger = logging.getLogger(__name__)
@@ -30,18 +34,22 @@ logger = logging.getLogger(__name__)
 class ExporterCoordinator:
     """Wraps the per-format exporter factory and runs it per-session.
 
-    The controller calls ``await coordinator.export(compiled)`` with
-    just the ``CompiledSession`` (the contract shape). The
-    coordinator uses the store to find the most recently closed
-    session and constructs the real exporters for that session's
-    bundle.
+    The controller calls ``await coordinator.export(compiled,
+    bundle=bundle)`` with the bundle it already loaded for the
+    compile. The coordinator constructs the real exporters for
+    exactly that bundle — it never looks a session up itself.
 
     Args:
-        store: The ``ObserverStore`` (used to find the most recent
-            session and load its bundle).
+        store: The ``ObserverStore``. Retained for future use (e.g.
+            re-compiling an archived session); the export path no
+            longer reads from it.
         formats: The configured output formats, e.g. ``["markdown", "json"]``.
         out_dir: Where the exporters should write their artifacts.
     """
+
+    #: Tells ``ObserverController._run_compile`` to pass ``bundle=``.
+    #: Plain exporters (constructed with their bundle) leave this False.
+    accepts_bundle = True
 
     def __init__(
         self,
@@ -53,8 +61,13 @@ class ExporterCoordinator:
         self._formats = list(formats)
         self._out_dir = Path(out_dir)
 
-    async def export(self, compiled: "CompiledSession") -> dict:
-        """Build exporters for the most recent session and run them.
+    async def export(self, compiled: "CompiledSession", *, bundle: "SessionBundle") -> dict:
+        """Build exporters for ``bundle`` and run them.
+
+        Args:
+            compiled: The compiled session from a ``SessionCompiler``.
+            bundle: The session being exported. Required — see the
+                module docstring for why there is no fallback.
 
         Returns:
             ``{"markdown_path": ..., "json_path": ...}`` for the
@@ -63,12 +76,6 @@ class ExporterCoordinator:
         """
         from agentvoca.observer.export import make_exporters
 
-        sessions = self._store.list_sessions(limit=1)
-        if not sessions:
-            logger.warning("ExporterCoordinator: no sessions found in store")
-            return {"markdown_path": "", "json_path": None}
-        session = sessions[0]
-        bundle = self._store.load_bundle(session_id=session.id)
         exporters = make_exporters(bundle, self._formats, self._out_dir)
         markdown_path = ""
         json_path: str | None = None

@@ -238,6 +238,51 @@ class ObserverController:
                 session_id,
             )
 
+    def _await_on_loop(self, coro, *, label: str, timeout: float = 2.0) -> None:
+        """Run ``coro`` to completion on the loop thread, from this thread.
+
+        Used by ``shutdown()`` for the soft ``shutdown()`` contract (R8),
+        where a provider may return a coroutine that closes a persistent
+        ``httpx.AsyncClient``. Simply dropping the coroutine leaks the
+        client's connection pool and raises "coroutine was never awaited"
+        at interpreter exit, so it must actually be awaited.
+
+        ``main.py`` calls ``ObserverController.shutdown()`` before
+        ``loop_thread.stop()``, so the loop is normally still running. If
+        it has already closed, the coroutine is explicitly closed instead
+        — that releases it cleanly and suppresses the warning.
+
+        Args:
+            coro: The coroutine returned by a soft ``shutdown()``.
+            label: Subsystem name, for logging only.
+            timeout: Seconds to wait before giving up on a hung shutdown.
+                Bounded because this runs on the app's exit path.
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._loop:
+            # Called from the loop thread itself. Blocking on a future
+            # here would deadlock the loop that has to run it, so hand
+            # the coroutine to the loop and return. The caller could not
+            # have waited synchronously in this situation anyway.
+            self._loop.create_task(coro)
+            logger.debug("Observer %s.shutdown() scheduled on the running loop", label)
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError:
+            # Loop already closed — close the coroutine so it is not
+            # garbage-collected un-awaited.
+            coro.close()
+            logger.debug("Observer %s.shutdown() skipped: loop already closed", label)
+            return
+        try:
+            future.result(timeout=timeout)
+        except Exception:
+            logger.debug("Observer %s.shutdown() did not complete cleanly", label, exc_info=True)
+
     async def _run_compile(self, session_id: int) -> None:
         """Compile a closed session and write its outputs to disk.
 
@@ -270,7 +315,15 @@ class ObserverController:
         json_path: str | None = None
         for exporter in self._exporters or []:
             try:
-                result = await exporter.export(compiled)  # type: ignore[attr-defined]
+                # Exporters that build their own per-session writers need
+                # to be told *which* session. Passing the bundle we already
+                # loaded above is the only way they can know: an exporter
+                # that looks the session up itself will export the wrong
+                # one as soon as a newer session exists.
+                if getattr(exporter, "accepts_bundle", False):
+                    result = await exporter.export(compiled, bundle=bundle)  # type: ignore[attr-defined]
+                else:
+                    result = await exporter.export(compiled)  # type: ignore[attr-defined]
             except Exception:
                 logger.exception("ObserverController: exporter raised; continuing")
                 continue
@@ -369,15 +422,7 @@ class ObserverController:
                 try:
                     result = shutdown()
                     if asyncio.iscoroutine(result):
-                        # The loop may already be closed; just close it
-                        # synchronously via run_until_complete on a
-                        # throwaway loop is too invasive here. Log and
-                        # continue.
-                        logger.debug(
-                            "Observer %s.shutdown() returned a coroutine; "
-                            "deferring to garbage collection",
-                            label,
-                        )
+                        self._await_on_loop(result, label=label)
                 except Exception:
                     logger.exception("Observer surface %s.shutdown() raised; continuing", label)
         # Always flush + stop the store. stop() is idempotent.

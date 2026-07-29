@@ -34,6 +34,7 @@ from agentvoca.core.events import (
     CorrectionLearnedEvent,
     ErrorEvent,
     InsertionCompleteEvent,
+    ObserverUtteranceEvent,
     PartialTranscriptEvent,
     RecordingStoppedEvent,
     SegmentFinalizedEvent,
@@ -61,6 +62,7 @@ from agentvoca.vocab.snippets import SnippetExpander
 
 if TYPE_CHECKING:
     from agentvoca.capture.screenshot import ScreenshotCapturer
+    from agentvoca.observer.arbiter import ASRArbiter
     from agentvoca.vision.base import VisionProvider
 
 logger = logging.getLogger(__name__)
@@ -163,6 +165,14 @@ class Orchestrator:
         self._vision_enabled: bool = False
         self._vision_provider: Optional["VisionProvider"] = None
         self._anchor_splicer: Optional[AnchorSplicer] = None
+
+        # ── v0.4.0: Observer ASR arbiter (D10) ─────────────────────
+        # When set, dictation ASR routes through the arbiter so ambient
+        # never delays dictation. No behavior change when None.
+        self._asr_arbiter: Optional["ASRArbiter"] = None
+        # Duration of the current dictation, used by the Observer
+        # dictated-utterance hook. Set in _on_recording_stopped.
+        self._current_duration_ms: int = 0
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -390,6 +400,16 @@ class Orchestrator:
 
     # ── Public API ───────────────────────────────────────────────────
 
+    def attach_asr_arbiter(self, arbiter: Optional["ASRArbiter"]) -> None:
+        """Install or remove the Observer ASR arbiter (v0.4.0, OBS-12).
+
+        When attached, dictation ASR routes through the arbiter so
+        ambient transcription never delays dictation. No behavior change
+        when ``arbiter`` is None — the orchestrator stays ignorant of
+        Observer.
+        """
+        self._asr_arbiter = arbiter
+
     def get_state(self) -> AppState:
         """Return the current application state."""
         return self._state_machine.state  # type: ignore[return-value]
@@ -545,9 +565,13 @@ class Orchestrator:
         ``cancel()`` can interrupt it at its next await. ``finally`` still
         runs the existing ``_reset_streaming_state`` so the next
         dictation starts clean.
+
+        v0.4.0: ``event.duration_ms`` is stashed for the
+        ``ObserverUtteranceEvent`` published after a successful insertion.
         """
         self._current_audio_bytes = event.audio_bytes
         self._current_sample_rate = event.sample_rate
+        self._current_duration_ms = event.duration_ms
 
         # Drive the state machine forward from its current position.
         if self._state_machine.state == "idle":
@@ -771,6 +795,11 @@ class Orchestrator:
 
         Uses the v1 batch path (``transcribe_audio``). The streaming path
         is handled separately via ``_run_streaming_asr``.
+
+        v0.4.0: when an ASR arbiter is attached, dictation routes
+        through it so ambient transcription never delays dictation. When
+        no arbiter is attached — every non-Observer user — the call is
+        bit-identical to v0.3.6.
         """
         assert self._asr_provider is not None
         assert self._current_audio_bytes is not None
@@ -783,13 +812,17 @@ class Orchestrator:
         for attempt in range(1 + _ASR_RETRIES):
             t0 = time.perf_counter()
             try:
-                segment = await self._asr_provider.transcribe_audio(audio_bytes, sample_rate)
+                if self._asr_arbiter is not None:
+                    text = await self._asr_arbiter.transcribe_priority(audio_bytes, sample_rate)
+                else:
+                    segment = await self._asr_provider.transcribe_audio(audio_bytes, sample_rate)
+                    text = segment.text
                 elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
                 self._event_bus.publish(TimingEvent(stage="asr", duration_ms=elapsed_ms))
-                self._event_bus.publish(TranscriptEvent(text=segment.text, is_final=True))
+                self._event_bus.publish(TranscriptEvent(text=text, is_final=True))
 
-                self._current_transcript = segment.text
+                self._current_transcript = text
 
                 result = self._state_machine.transition("TranscriptEvent", is_final=True)
                 if result.transitioned:
@@ -892,6 +925,14 @@ class Orchestrator:
             self._last_transcript = text
             self._event_bus.publish(
                 InsertionCompleteEvent(success=True, method_used=result.method_used)
+            )
+            # v0.4.0: dictated-utterance hook (OBS-12). Published
+            # unconditionally — the bus no-ops when nobody subscribes,
+            # so the orchestrator stays ignorant of Observer.
+            self._event_bus.publish(
+                ObserverUtteranceEvent(
+                    text=text, source="dictated", duration_ms=self._current_duration_ms
+                )
             )
             self._state_machine.transition("InsertionCompleteEvent", success=True)
             self._emit_state_change(current_state, "idle")

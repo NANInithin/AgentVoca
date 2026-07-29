@@ -37,10 +37,14 @@ class VAD:
 
     def __init__(
         self,
-        event_bus: EventBus,
+        event_bus: Optional[EventBus] = None,
         threshold: float = _DEFAULT_THRESHOLD,
         sample_rate: int = _VAD_SAMPLE_RATE,
     ) -> None:
+        # event_bus is optional. When None, ``emit_transition`` is a no-op —
+        # the v0.4.0 AmbientListener constructs its own VAD instance and
+        # does not want to publish VADSpeechEvent (the dictation VAD owns
+        # that event on the main bus).
         self._event_bus = event_bus
         self._threshold = threshold
         self._target_sample_rate = sample_rate
@@ -121,6 +125,8 @@ class VAD:
             is_speech: The current speech state to compare against the last known.
             timestamp_ms: Timestamp of the audio chunk in milliseconds.
         """
+        if self._event_bus is None:
+            return
         if self._last_speech_state is None or self._last_speech_state != is_speech:
             self._last_speech_state = is_speech
             self._event_bus.publish(VADSpeechEvent(is_speech=is_speech, timestamp_ms=timestamp_ms))

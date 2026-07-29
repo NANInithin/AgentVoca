@@ -25,7 +25,12 @@ from agentvoca.config.loader import load_config_lenient
 from agentvoca.config.schema import ASRConfig, FullConfig
 from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
-from agentvoca.core.events import ErrorEvent, HotkeyEvent, ScreenshotCapturedEvent
+from agentvoca.core.events import (
+    ErrorEvent,
+    HotkeyEvent,
+    ObserverUtteranceEvent,
+    ScreenshotCapturedEvent,
+)
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion._executor import shutdown_input_executor
@@ -195,6 +200,124 @@ def main(argv: list[str] | None = None) -> int:
     # class is imported lazily inside _build_and_start_pipeline to keep
     # the cold-start import path lean.
     observer_controller: object | None = None
+
+    def _build_observer_capture(
+        cfg: FullConfig,
+        orchestrator: "Orchestrator | None",
+        registry: ProviderRegistry,
+        loop_thread: AsyncLoopThread,
+        audio: AudioCapture,
+        observer_controller: object,
+        event_bus: EventBus,
+    ) -> tuple:
+        """Build and wire the capture-side Observer objects.
+
+        Returns the (ambient, triggers, grabber, ocr, selection) tuple
+        the controller expects, or a tuple of Nones on any construction
+        failure — a broken Observer must never block dictation.
+        """
+        try:
+            from agentvoca.context.active_app import ActiveAppDetector  # noqa: PLC0415
+            from agentvoca.observer.arbiter import ASRArbiter  # noqa: PLC0415
+            from agentvoca.observer.audio import AmbientListener  # noqa: PLC0415
+            from agentvoca.observer.screen import ScreenGrabber  # noqa: PLC0415
+            from agentvoca.observer.triggers import TriggerEngine, TriggerGate  # noqa: PLC0415
+
+            active_app = ActiveAppDetector()
+
+            # ASR arbiter — wrap the existing ASR provider so dictation
+            # never waits on ambient.
+            asr_arbiter: ASRArbiter | None = None
+            if (
+                orchestrator is not None
+                and getattr(orchestrator, "_asr_provider", None) is not None
+            ):
+
+                def _on_ambient_text(text: str, ts_ms: int, duration_ms: int) -> None:
+                    if not observer_controller.is_active:
+                        return
+                    session = observer_controller.sessions.current
+                    if session is None:
+                        return
+                    session.record(
+                        "utterance_ambient",
+                        text=text,
+                        meta={"duration_ms": duration_ms},
+                        ts_ms=ts_ms,
+                    )
+                    observer_controller.event_bus.publish(
+                        ObserverUtteranceEvent(text=text, source="ambient", duration_ms=duration_ms)
+                    )
+
+                asr_arbiter = ASRArbiter(
+                    provider=orchestrator._asr_provider,
+                    queue_depth=cfg.observer.ocr.max_queue,
+                )
+                asr_arbiter.start(on_text=_on_ambient_text)
+                orchestrator.attach_asr_arbiter(asr_arbiter)
+
+            ocr_provider = registry.get_ocr(cfg.observer.ocr)
+
+            if cfg.observer.selection.method == "uia" and sys.platform == "win32":
+                from agentvoca.observer.selection.windows_uia import (  # noqa: PLC0415
+                    WindowsUIASelectionReader,
+                )
+
+                selection_reader = WindowsUIASelectionReader(
+                    max_chars=cfg.observer.selection.max_chars,
+                    active_app=active_app,
+                )
+            else:
+                from agentvoca.observer.selection.noop import (  # noqa: PLC0415
+                    NoopSelectionReader,
+                )
+
+                selection_reader = NoopSelectionReader()
+
+            grabber = ScreenGrabber(
+                config=cfg.observer.screen,
+                active_app=active_app,
+            )
+
+            gate = TriggerGate(
+                min_interval_ms=cfg.observer.triggers.min_interval_ms,
+                max_keyframes_per_min=cfg.observer.triggers.max_keyframes_per_min,
+                is_session_active=lambda: observer_controller.is_active,
+                is_paused=lambda: observer_controller.is_paused,
+            )
+            trigger_engine = TriggerEngine(
+                config=cfg.observer.triggers,
+                session=observer_controller.sessions,
+                active_app=active_app,
+                gate=gate,
+            )
+
+            def _submit_ambient(audio: bytes, ts_ms: int, duration_ms: int) -> None:
+                if asr_arbiter is None:
+                    return
+                asr_arbiter.submit_ambient(
+                    audio,
+                    ts_ms=ts_ms,
+                    duration_ms=duration_ms,
+                    sample_rate=cfg.audio.sample_rate,
+                )
+
+            ambient_listener = AmbientListener(
+                event_bus=event_bus,
+                loop=loop_thread.loop,
+                on_utterance=_submit_ambient,
+                sample_rate=cfg.audio.sample_rate,
+                on_speech_onset=trigger_engine.on_speech_onset,
+            )
+
+            audio.set_ambient_sink(ambient_listener)
+
+            return (ambient_listener, trigger_engine, grabber, ocr_provider, selection_reader)
+        except Exception:
+            logger.exception(
+                "Observer capture construction failed; observer will run in disabled mode"
+            )
+            return (None, None, None, None, None)
 
     # ── UI scaffolding (tray, overlay) ───────────────────────────────
     # Built up front so the user has a UI surface immediately, even before
@@ -461,7 +584,17 @@ def main(argv: list[str] | None = None) -> int:
                 loop=loop_thread.loop,
             )
             # TRACK 2 REPLACES THIS LINE:
-            observer_controller.attach_capture(None, None, None, None, None)
+            observer_controller.attach_capture(
+                *_build_observer_capture(
+                    cfg=cfg,
+                    orchestrator=orchestrator,
+                    registry=registry,
+                    loop_thread=loop_thread,
+                    audio=audio,
+                    observer_controller=observer_controller,
+                    event_bus=event_bus,
+                )
+            )
             # TRACK 3 REPLACES THIS LINE:
             observer_controller.attach_surface(None, None, None)
         return True

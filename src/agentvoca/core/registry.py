@@ -97,6 +97,12 @@ class ProviderRegistry:
             "clipboard", "agentvoca.insertion.clipboard:ClipboardInsertionStrategy"
         )
         # v0.4.0 Observer OCR providers — registered by Track 2
+        self.register_ocr("rapidocr", "agentvoca.observer.ocr.rapidocr:RapidOCRProvider")
+        self.register_ocr("none", "agentvoca.observer.ocr.none:NoneOCRProvider")
+        self.register_ocr(
+            "openai_compatible",
+            "agentvoca.observer.ocr.openai_compatible:OpenAICompatibleOCRProvider",
+        )
         # v0.4.0 Observer compilers — registered by Track 3
 
     def _resolve(self, entry: _ProviderEntry) -> type:

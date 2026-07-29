@@ -64,7 +64,7 @@ class WindowsUIASelectionReader(SelectionReader):
         self._timeout_ms = timeout_ms
         # The executor is created lazily on first call so the
         # Windows-only comtypes dependency is not paid at import time
-        # on macOS/Linux (the registry never registers the UIA
+        # on macOS/Linux (the registry never resolves the UIA
         # reader there).
         self._executor: Optional[ThreadPoolExecutor] = None
         # Track which foreground app names we have already logged a
@@ -78,6 +78,24 @@ class WindowsUIASelectionReader(SelectionReader):
         # the common case on Windows).
         self._checked_availability: bool = False
         self._available: bool = False
+        # Tracks whether the executor has been shut down, so __del__
+        # does not double-shutdown.
+        self._executor_shutdown = False
+
+    def __del__(self) -> None:
+        """Best-effort executor shutdown so worker threads do not leak.
+
+        A leaked executor keeps its worker thread alive and may hang
+        in a comtypes import long after the test (or app) that
+        created this reader is gone.
+        """
+        executor = self._executor
+        if executor is not None and not self._executor_shutdown:
+            try:
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
+            self._executor_shutdown = True
 
     def is_available(self) -> bool:
         """True if UIA is importable on this platform.
@@ -89,8 +107,15 @@ class WindowsUIASelectionReader(SelectionReader):
         if sys.platform != "win32":
             return False
         if not self._checked_availability:
+            # Eagerly import comtypes from the calling (typically main)
+            # thread. The worker thread would hang on first import
+            # because comtypes' lazy gen-package init is not
+            # thread-safe. Once imported here, ``comtypes`` is a normal
+            # sys.modules entry that any thread can re-import cheaply.
             try:
                 import comtypes  # noqa: F401, PLC0415
+                import comtypes.client  # noqa: F401, PLC0415
+                import comtypes.gen  # noqa: F401, PLC0415
 
                 self._available = True
             except Exception:
@@ -161,15 +186,32 @@ class WindowsUIASelectionReader(SelectionReader):
             self._com_inited = False
 
     def _get_text(self) -> Optional[str]:
-        """Call into UIA. Returns the selected text, or None on failure."""
-        try:
-            import comtypes  # noqa: PLC0415
-            from comtypes import GUID  # noqa: PLC0415
-            from comtypes.client import CreateObject  # noqa: PLC0415
-        except Exception as exc:
-            logger.debug("UIA: comtypes import failed: %s", exc)
-            self._available = False
+        """Call into UIA. Returns the selected text, or None on failure.
+
+        ``comtypes`` is imported eagerly in ``is_available()`` (which is
+        called on the main thread before this worker thread starts).
+        Here we look the modules up via ``sys.modules`` rather than
+        re-running ``import`` — comtypes' lazy gen-package init can
+        hang in a non-main thread when the host's logging stream has
+        been closed (a common test-environment condition).
+        """
+        import sys
+
+        comtypes = sys.modules.get("comtypes")
+        comtypes_client = sys.modules.get("comtypes.client")
+        if comtypes is None or comtypes_client is None:
+            logger.debug("UIA: comtypes not imported; cannot read selection")
             return None
+        # ``comtypes.GUID`` is a class re-exported by the top-level
+        # comtypes package. Older releases exposed it as a function —
+        # fall back gracefully.
+        GUID = getattr(comtypes, "GUID", None)
+        if GUID is None:
+            logger.debug("UIA: comtypes.GUID not available")
+            return None
+        CreateObject = comtypes_client.CreateObject
+        GetModule = comtypes_client.GetModule
+        CoCreateInstance = comtypes.CoCreateInstance
 
         # IUIAutomation interface ID and TextPattern.
         IUIAutomation_IID = GUID("{30CBE57D-9FB4-11D2-9268-00C04C796984}")
@@ -177,10 +219,8 @@ class WindowsUIASelectionReader(SelectionReader):
 
         try:
             automation = CreateObject(
-                comtypes.CoCreateInstance(
-                    comtypes.client.GetModule(
-                        ("{30CBE57D-9FB4-11D2-9268-00C04C796984}", 1, 0)
-                    ).IUIAutomation,
+                CoCreateInstance(
+                    GetModule(("{30CBE57D-9FB4-11D2-9268-00C04C796984}", 1, 0)).IUIAutomation,
                     interface=IUIAutomation_IID,
                 )
             )

@@ -21,9 +21,7 @@ class NoneOCRProvider(OCRProvider):
     def __init__(self, config: ObserverOCRConfig) -> None:
         super().__init__(config)
 
-    async def extract(
-        self, image_jpeg: bytes, *, hint: Optional[str] = None
-    ) -> OCRResult:
+    async def extract(self, image_jpeg: bytes, *, hint: Optional[str] = None) -> OCRResult:
         return OCRResult(
             text="",
             confidence=None,

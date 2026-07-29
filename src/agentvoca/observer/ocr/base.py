@@ -31,9 +31,7 @@ class OCRProvider(ABC):
         self._config = config
 
     @abstractmethod
-    async def extract(
-        self, image_jpeg: bytes, *, hint: Optional[str] = None
-    ) -> OCRResult:
+    async def extract(self, image_jpeg: bytes, *, hint: Optional[str] = None) -> OCRResult:
         """Extract text from a JPEG.
 
         Args:

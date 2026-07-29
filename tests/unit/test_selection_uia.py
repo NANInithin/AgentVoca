@@ -111,11 +111,20 @@ def _install_fake_comtypes(monkeypatch, automation: _FakeAutomation) -> None:
     # the submodule as an attribute so both `import comtypes.client`
     # and `comtypes.client` lookups work.
     fake_module.client = fake_client  # type: ignore[attr-defined]
+    # comtypes.gen is imported in is_available() to confirm the
+    # gen-package init runs; provide a minimal stub.
+    fake_gen = types.ModuleType("comtypes.gen")
+    fake_module.gen = fake_gen  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "comtypes", fake_module)
     monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
+    monkeypatch.setitem(sys.modules, "comtypes.gen", fake_gen)
+    # Mark comtypes as available so the reader proceeds.
+    # (is_available() in production imports the modules; here we just
+    # confirm the patch is in place.)
 
 
 def _make_uia_reader(
+    request,
     monkeypatch,
     automation: _FakeAutomation,
     *,
@@ -125,7 +134,20 @@ def _make_uia_reader(
     from agentvoca.observer.selection.windows_uia import WindowsUIASelectionReader
 
     _install_fake_comtypes(monkeypatch, automation)
-    return WindowsUIASelectionReader(max_chars=max_chars, timeout_ms=timeout_ms)
+    reader = WindowsUIASelectionReader(max_chars=max_chars, timeout_ms=timeout_ms)
+    # Tear down the executor on test exit so its worker thread does
+    # not leak (and never blocks the next test by being the first to
+    # try to import real comtypes).
+    def _teardown() -> None:
+        if reader._executor is not None and not reader._executor_shutdown:
+            try:
+                reader._executor.shutdown(wait=False)
+                reader._executor_shutdown = True
+            except Exception:
+                pass
+
+    request.addfinalizer(_teardown)
+    return reader
 
 
 # Skip UIA tests on non-Windows because the module's import-time
@@ -138,12 +160,12 @@ pytestmark_uia = pytest.mark.skipif(
 
 @pytestmark_uia
 class TestUIASelection:
-    def test_happy_path(self, monkeypatch) -> None:
+    def test_happy_path(self, request, monkeypatch) -> None:
         text = "the quick brown fox"
         pattern = _FakeTextPattern(_FakeSelection(length=1, text=text))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
 
         result = reader.read_selection()
         assert result is not None
@@ -152,39 +174,39 @@ class TestUIASelection:
         assert result.truncated is False
         assert result.app_name is None  # no active_app detector
 
-    def test_no_text_pattern_returns_none(self, monkeypatch) -> None:
+    def test_no_text_pattern_returns_none(self, request, monkeypatch) -> None:
         element = _FakeElement(pattern=None)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
         assert reader.read_selection() is None
 
-    def test_no_selection_returns_none(self, monkeypatch) -> None:
+    def test_no_selection_returns_none(self, request, monkeypatch) -> None:
         pattern = _FakeTextPattern(selection=None)
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
         assert reader.read_selection() is None
 
-    def test_empty_selection_returns_none(self, monkeypatch) -> None:
+    def test_empty_selection_returns_none(self, request, monkeypatch) -> None:
         pattern = _FakeTextPattern(selection=_FakeSelection(length=0, text=""))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
         assert reader.read_selection() is None
 
-    def test_whitespace_only_returns_none(self, monkeypatch) -> None:
+    def test_whitespace_only_returns_none(self, request, monkeypatch) -> None:
         pattern = _FakeTextPattern(selection=_FakeSelection(length=1, text="   \n  "))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
         assert reader.read_selection() is None
 
-    def test_truncation_at_max_chars(self, monkeypatch) -> None:
+    def test_truncation_at_max_chars(self, request, monkeypatch) -> None:
         long_text = "x" * 5000
         pattern = _FakeTextPattern(selection=_FakeSelection(length=1, text=long_text))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation, max_chars=100)
+        reader = _make_uia_reader(request, monkeypatch, automation, max_chars=100)
 
         result = reader.read_selection()
         assert result is not None
@@ -196,7 +218,7 @@ class TestUIASelection:
 class TestUIAClipboardSafety:
     """The contract: the selection path NEVER touches the clipboard."""
 
-    def test_clipboard_never_read_or_written(self, monkeypatch) -> None:
+    def test_clipboard_never_read_or_written(self, request, monkeypatch) -> None:
         import pyperclip
 
         def explode(*args, **kwargs):
@@ -209,14 +231,14 @@ class TestUIAClipboardSafety:
         pattern = _FakeTextPattern(_FakeSelection(length=1, text=text))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
 
         result = reader.read_selection()
         assert result is not None
         assert result.text == text
         # If we got here without AssertionError, the clipboard is safe.
 
-    def test_pyautogui_never_called(self, monkeypatch) -> None:
+    def test_pyautogui_never_called(self, request, monkeypatch) -> None:
         import pyautogui
 
         def explode(*args, **kwargs):
@@ -230,7 +252,7 @@ class TestUIAClipboardSafety:
         pattern = _FakeTextPattern(_FakeSelection(length=1, text=text))
         element = _FakeElement(pattern)
         automation = _FakeAutomation(element)
-        reader = _make_uia_reader(monkeypatch, automation)
+        reader = _make_uia_reader(request, monkeypatch, automation)
 
         result = reader.read_selection()
         assert result is not None
@@ -238,7 +260,7 @@ class TestUIAClipboardSafety:
 
 @pytestmark_uia
 class TestUIATimeout:
-    def test_timeout_returns_none(self, monkeypatch) -> None:
+    def test_timeout_returns_none(self, request, monkeypatch) -> None:
         """A UIA call that hangs past the timeout returns None."""
 
         class SlowAutomation(_FakeAutomation):
@@ -260,7 +282,7 @@ class TestUIATimeout:
         # Must return close to the timeout, not the full 2 s sleep.
         assert elapsed < 1.0, f"timeout took {elapsed:.2f}s"
 
-    def test_repeated_timeouts_log_once(self, monkeypatch) -> None:
+    def test_repeated_timeouts_log_once(self, request, monkeypatch) -> None:
         """Multiple timeouts on the same app log once (RK4)."""
 
         class SlowAutomation(_FakeAutomation):
@@ -291,7 +313,7 @@ class TestUIATimeout:
 
 
 class TestNonWindows:
-    def test_uia_reader_reports_unavailable_on_non_windows(self, monkeypatch) -> None:
+    def test_uia_reader_reports_unavailable_on_non_windows(self, request, monkeypatch) -> None:
         from agentvoca.observer.selection.windows_uia import (
             WindowsUIASelectionReader,
         )

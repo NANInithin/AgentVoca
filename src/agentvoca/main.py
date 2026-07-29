@@ -19,6 +19,7 @@ from agentvoca.app.overlay import StatusOverlay
 from agentvoca.app.tray import TrayApp
 from agentvoca.audio.capture import AudioCapture
 from agentvoca.audio.chunker import AudioChunker
+from agentvoca.audio.vad import VAD
 from agentvoca.capture.screenshot import ScreenshotCapturer
 from agentvoca.config.loader import load_config_lenient
 from agentvoca.config.schema import ASRConfig, FullConfig
@@ -58,13 +59,20 @@ def _build_registry() -> ProviderRegistry:
         logger.debug("Registered insertion strategy: %s", name)
     for name in registry.list_vision():
         logger.debug("Registered vision provider: %s", name)
+    for name in registry.list_ocr():
+        logger.debug("Registered Observer OCR provider: %s", name)
+    for name in registry.list_compiler():
+        logger.debug("Registered Observer compiler: %s", name)
 
     logger.info(
-        "Provider registry initialized: %d ASR, %d cleanup, %d insertion, %d vision",
+        "Provider registry initialized: %d ASR, %d cleanup, %d insertion, %d vision, "
+        "%d Observer OCR, %d Observer compiler",
         len(registry.list_asr()),
         len(registry.list_cleanup()),
         len(registry.list_insertion()),
         len(registry.list_vision()),
+        len(registry.list_ocr()),
+        len(registry.list_compiler()),
     )
     return registry
 
@@ -182,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
     audio: AudioCapture | None = None
     chunker: AudioChunker | None = None
     hotkeys: HotkeyManager | None = None
+    # v0.4.0: Observer mode controller. Stays None when observer.enabled
+    # is False; on_hotkey closes over it like the other handles. The
+    # class is imported lazily inside _build_and_start_pipeline to keep
+    # the cold-start import path lean.
+    observer_controller: object | None = None
 
     # ── UI scaffolding (tray, overlay) ───────────────────────────────
     # Built up front so the user has a UI surface immediately, even before
@@ -203,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
             manager.register(cfg.hotkeys.undo, "undo")
         if cfg.vision.enabled and cfg.hotkeys.capture_screenshot:
             manager.register(cfg.hotkeys.capture_screenshot, "capture_screenshot")
+        # v0.4.0: Observer hotkeys. Always gated by observer.enabled; the
+        # hotkey string is validated by HotkeysConfig at config load.
+        if cfg.observer.enabled and cfg.hotkeys.toggle_observer:
+            manager.register(cfg.hotkeys.toggle_observer, "toggle_observer")
+        if cfg.observer.enabled and cfg.hotkeys.pause_observer:
+            manager.register(cfg.hotkeys.pause_observer, "pause_observer")
 
     def _reload_hot_components(new_config: FullConfig) -> None:
         """Hot-apply everything we can from a freshly-saved config.
@@ -300,6 +319,18 @@ def main(argv: list[str] | None = None) -> int:
                 screenshot_capturer.capture()
             else:
                 logger.debug("Screenshot hotkey ignored (not recording)")
+        # v0.4.0: Observer hotkeys. The controller is None when observer
+        # is disabled, so the hotkey may be registered but the action
+        # becomes a no-op.
+        elif action == "toggle_observer":
+            if observer_controller is not None:
+                observer_controller.toggle_session()
+        elif action == "pause_observer":
+            if observer_controller is not None:
+                if observer_controller.is_paused:
+                    observer_controller.resume()
+                else:
+                    observer_controller.pause()
 
     event_bus.subscribe(HotkeyEvent, on_hotkey)
 
@@ -313,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         load. Returns True on success, False if audio or the orchestrator
         failed to start.
         """
-        nonlocal screenshot_capturer, orchestrator, audio, chunker, hotkeys
+        nonlocal screenshot_capturer, orchestrator, audio, chunker, hotkeys, observer_controller
 
         # v3: screenshot capture (only when vision is enabled)
         if cfg.vision.enabled:
@@ -358,11 +389,29 @@ def main(argv: list[str] | None = None) -> int:
                 cfg.asr.streaming_window_s,
             )
 
+        # OBS-0: construct a VAD when the user opted in. Fail-open: any failure
+        # logs a warning and leaves vad=None, which is exactly today's behavior
+        # (no auto-stop; recording ends only on max_recording_duration_s).
+        vad: VAD | None = None
+        if cfg.audio.vad_enabled:
+            try:
+                vad = VAD(
+                    event_bus=event_bus,
+                    sample_rate=cfg.audio.sample_rate,
+                )
+                if not vad.is_available:
+                    logger.warning("VAD requested but silero is unavailable — auto-stop disabled")
+                    vad = None
+            except Exception:
+                logger.exception("VAD initialization failed — continuing without auto-stop")
+                vad = None
+
         audio = AudioCapture(
             event_bus=event_bus,
             sample_rate=cfg.audio.sample_rate,
             channels=cfg.audio.channels,
             device_name=cfg.audio.input_device,
+            vad=vad,
             silence_timeout_ms=cfg.audio.silence_timeout_ms,
             max_duration_s=cfg.audio.max_recording_duration_s,
             chunker=chunker,
@@ -389,6 +438,32 @@ def main(argv: list[str] | None = None) -> int:
         _register_hotkeys(hotkeys, cfg)
         hotkeys.start()
         logger.info("Hotkeys active — press %s to record", cfg.hotkeys.toggle_recording)
+
+        # ── v0.4.0: Observer mode ───────────────────────────────────
+        # Track 1 lands the full wiring block (controller construction,
+        # store start, retention purge, both attach_* stub lines). Tracks
+        # 2 and 3 each replace exactly their own marked line; nothing
+        # else in this block changes.
+        if cfg.observer.enabled:
+            from pathlib import Path as _Path
+
+            from agentvoca.observer.controller import ObserverController  # noqa: PLC0415
+            from agentvoca.observer.store import ObserverStore  # noqa: PLC0415
+
+            observer_store = ObserverStore(root=_Path(cfg.observer.storage.dir).expanduser())
+            observer_store.start()
+            observer_store.purge_expired(cfg.observer.storage.retention_days)
+
+            observer_controller = ObserverController(
+                config=cfg,
+                event_bus=event_bus,
+                store=observer_store,
+                loop=loop_thread.loop,
+            )
+            # TRACK 2 REPLACES THIS LINE:
+            observer_controller.attach_capture(None, None, None, None, None)
+            # TRACK 3 REPLACES THIS LINE:
+            observer_controller.attach_surface(None, None, None)
         return True
 
     # ── First-run gate ────────────────────────────────────────────────
@@ -457,6 +532,15 @@ def main(argv: list[str] | None = None) -> int:
                 loop_thread.submit(orchestrator.stop()).result(timeout=3.0)
             except Exception:
                 logger.debug("Orchestrator stop did not complete cleanly", exc_info=True)
+        # v0.4.0: Observer shutdown — must happen BEFORE overlay.stop()
+        # so the overlay is still up while we close any open session and
+        # write the final events. A failure here is logged at DEBUG and
+        # swallowed (the app is shutting down anyway).
+        if observer_controller is not None:
+            try:
+                observer_controller.shutdown()
+            except Exception:
+                logger.debug("Observer shutdown did not complete cleanly", exc_info=True)
         overlay.stop()
         shutdown_input_executor()
         loop_thread.stop()

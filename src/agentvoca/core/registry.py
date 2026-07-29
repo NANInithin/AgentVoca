@@ -13,13 +13,28 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Type, Union
 
-from agentvoca.config.schema import ASRConfig, CleanupConfig, InsertionConfig, VisionConfig
+from agentvoca.config.schema import (
+    ASRConfig,
+    CleanupConfig,
+    InsertionConfig,
+    ObserverCompileConfig,
+    ObserverOCRConfig,
+    VisionConfig,
+)
 from agentvoca.utils.errors import ProviderNotFoundError
 
 if TYPE_CHECKING:
     from ..asr.base import ASRProvider
     from ..cleanup.base import CleanupProvider
     from ..insertion.base import InsertionStrategy
+
+    # v0.4.0 Observer namespaces — the ABCs live in modules owned by
+    # Track 2 (observer/ocr/base.py) and Track 3 (observer/compile/base.py).
+    # TYPE_CHECKING-only import keeps this module importable before those
+    # packages exist; a runtime get_ocr / get_compiler call resolves
+    # the dotted path lazily.
+    from ..observer.compile.base import SessionCompiler
+    from ..observer.ocr.base import OCRProvider
     from ..vision.base import VisionProvider
 
 # A registered entry is either an already-imported class (the public
@@ -42,6 +57,10 @@ class ProviderRegistry:
         self._cleanup: dict[str, _ProviderEntry] = {}
         self._insertion: dict[str, _ProviderEntry] = {}
         self._vision: dict[str, _ProviderEntry] = {}
+        # v0.4.0 Observer namespaces. Built-ins are registered by Tracks
+        # 2 and 3 respectively, in disjoint _register_builtins lines below.
+        self._ocr: dict[str, _ProviderEntry] = {}
+        self._compiler: dict[str, _ProviderEntry] = {}
         if register_builtins:
             self._register_builtins()
 
@@ -77,6 +96,8 @@ class ProviderRegistry:
         self.register_insertion(
             "clipboard", "agentvoca.insertion.clipboard:ClipboardInsertionStrategy"
         )
+        # v0.4.0 Observer OCR providers — registered by Track 2
+        # v0.4.0 Observer compilers — registered by Track 3
 
     def _resolve(self, entry: _ProviderEntry) -> type:
         """Resolve a lazily-registered ``"module:Class"`` path to a class."""
@@ -127,6 +148,26 @@ class ProviderRegistry:
                 ``"module:Class"`` dotted path.
         """
         self._vision[name] = cls
+
+    def register_ocr(self, name: str, cls: Type["OCRProvider"]) -> None:
+        """Register an Observer OCR provider class under the given name.
+
+        Args:
+            name: Unique registry key (e.g., ``"rapidocr"``).
+            cls: A concrete subclass of ``OCRProvider`` or a
+                ``"module:Class"`` dotted path. Registered by Track 2.
+        """
+        self._ocr[name] = cls
+
+    def register_compiler(self, name: str, cls: Type["SessionCompiler"]) -> None:
+        """Register an Observer session-compiler class under the given name.
+
+        Args:
+            name: Unique registry key (e.g., ``"rules"``).
+            cls: A concrete subclass of ``SessionCompiler`` or a
+                ``"module:Class"`` dotted path. Registered by Track 3.
+        """
+        self._compiler[name] = cls
 
     # ── Lookup / Factory ──────────────────────────────────────────────
 
@@ -222,6 +263,52 @@ class ProviderRegistry:
         self._vision[name] = cls
         return cls(config=config)
 
+    def get_ocr(self, config: ObserverOCRConfig) -> "OCRProvider":
+        """Construct and return an Observer OCR provider from config.
+
+        Args:
+            config: The Observer OCR configuration block.
+
+        Returns:
+            A new ``OCRProvider`` instance.
+
+        Raises:
+            ProviderNotFoundError: If ``config.provider`` is not registered.
+        """
+        name = config.provider
+        entry = self._ocr.get(name)
+        if entry is None:
+            available = ", ".join(sorted(self._ocr.keys()))
+            raise ProviderNotFoundError(
+                f"Unknown Observer OCR provider '{name}'. Available: {available}."
+            )
+        cls = self._resolve(entry)
+        self._ocr[name] = cls
+        return cls(config=config)
+
+    def get_compiler(self, config: ObserverCompileConfig) -> "SessionCompiler":
+        """Construct and return an Observer session compiler from config.
+
+        Args:
+            config: The Observer compile configuration block.
+
+        Returns:
+            A new ``SessionCompiler`` instance.
+
+        Raises:
+            ProviderNotFoundError: If ``config.provider`` is not registered.
+        """
+        name = config.provider
+        entry = self._compiler.get(name)
+        if entry is None:
+            available = ", ".join(sorted(self._compiler.keys()))
+            raise ProviderNotFoundError(
+                f"Unknown Observer compiler '{name}'. Available: {available}."
+            )
+        cls = self._resolve(entry)
+        self._compiler[name] = cls
+        return cls(config=config)
+
     # ── Listing ───────────────────────────────────────────────────────
 
     def list_asr(self) -> list[str]:
@@ -239,3 +326,11 @@ class ProviderRegistry:
     def list_vision(self) -> list[str]:
         """Return a sorted list of registered vision provider names."""
         return sorted(self._vision.keys())
+
+    def list_ocr(self) -> list[str]:
+        """Return a sorted list of registered Observer OCR provider names."""
+        return sorted(self._ocr.keys())
+
+    def list_compiler(self) -> list[str]:
+        """Return a sorted list of registered Observer compiler names."""
+        return sorted(self._compiler.keys())

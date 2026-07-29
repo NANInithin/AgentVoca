@@ -5,6 +5,8 @@ Tests cover:
 - ``ProviderNotFoundError`` for unknown providers.
 - Listing registered names.
 - ABC contract enforcement (cannot instantiate ABCs directly).
+- v0.4.0 Observer OCR + compiler namespaces (lazy dotted-path resolve,
+  ProviderNotFoundError, list_* methods).
 """
 
 from typing import Optional
@@ -13,7 +15,13 @@ import pytest
 
 from agentvoca.asr.base import ASRProvider
 from agentvoca.cleanup.base import CleanupProvider
-from agentvoca.config.schema import ASRConfig, CleanupConfig, InsertionConfig
+from agentvoca.config.schema import (
+    ASRConfig,
+    CleanupConfig,
+    InsertionConfig,
+    ObserverCompileConfig,
+    ObserverOCRConfig,
+)
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.core.types import (
     ASRContext,
@@ -23,6 +31,7 @@ from agentvoca.core.types import (
 )
 from agentvoca.insertion.base import InsertionStrategy
 from agentvoca.utils.errors import ProviderNotFoundError
+from agentvoca.vision.base import VisionProvider
 
 # ── Concrete Mock Providers ──────────────────────────────────────────
 
@@ -264,3 +273,122 @@ class TestABCContracts:
         """Use a valid literal strategy key that matches registration."""
         strategy = MockInsertionStrategy(config=InsertionConfig(strategy="keyboard"))
         assert strategy.get_name() == "mock_insert"
+
+
+# ── v0.4.0 Observer OCR + compiler namespaces ──────────────────────
+# The ABCs (``OCRProvider``, ``SessionCompiler``) are owned by Tracks
+# 2 and 3 respectively, so we test the registry with stand-in classes
+# that satisfy the *call shape* — they accept a config and return
+# something. This is enough to exercise the registry's machinery;
+# Track 2/3 own their own contract tests.
+
+# These names are chosen so an accidental collision with future real
+# built-ins is immediately visible.
+_OCR_REG_NAME = "mock_observer_ocr"
+_COMPILER_REG_NAME = "mock_observer_compiler"
+
+
+class _MockOCR:
+    """Stand-in for an ``OCRProvider`` that just records the config."""
+
+    def __init__(self, config: ObserverOCRConfig) -> None:
+        self.config = config
+
+    def get_name(self) -> str:
+        return _OCR_REG_NAME
+
+
+class _MockCompiler:
+    """Stand-in for a ``SessionCompiler`` that just records the config."""
+
+    def __init__(self, config: ObserverCompileConfig) -> None:
+        self.config = config
+
+    def get_name(self) -> str:
+        return _COMPILER_REG_NAME
+
+
+class TestObserverRegistryNamespaces:
+    def test_register_and_get_ocr(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        registry.register_ocr(_OCR_REG_NAME, _MockOCR)
+        config = ObserverOCRConfig(provider=_OCR_REG_NAME)
+        provider = registry.get_ocr(config)
+        assert isinstance(provider, _MockOCR)
+        assert provider.config is config
+
+    def test_register_and_get_compiler(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        registry.register_compiler(_COMPILER_REG_NAME, _MockCompiler)
+        config = ObserverCompileConfig(provider=_COMPILER_REG_NAME)
+        compiler = registry.get_compiler(config)
+        assert isinstance(compiler, _MockCompiler)
+        assert compiler.config is config
+
+    def test_get_ocr_unknown_raises(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        with pytest.raises(ProviderNotFoundError) as exc:
+            registry.get_ocr(ObserverOCRConfig(provider="nonexistent_ocr"))
+        assert "Unknown Observer OCR provider" in str(exc.value)
+        # Available list is empty here so the suffix may be empty; just
+        # assert the unknown name appears.
+        assert "nonexistent_ocr" in str(exc.value)
+
+    def test_get_compiler_unknown_raises(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        with pytest.raises(ProviderNotFoundError) as exc:
+            registry.get_compiler(ObserverCompileConfig(provider="nonexistent_compiler"))
+        assert "Unknown Observer compiler" in str(exc.value)
+        assert "nonexistent_compiler" in str(exc.value)
+
+    def test_list_ocr_empty(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        assert registry.list_ocr() == []
+
+    def test_list_ocr(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        registry.register_ocr("b_ocr", _MockOCR)
+        registry.register_ocr("a_ocr", _MockOCR)
+        assert registry.list_ocr() == ["a_ocr", "b_ocr"]
+
+    def test_list_compiler_empty(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        assert registry.list_compiler() == []
+
+    def test_list_compiler(self) -> None:
+        registry = ProviderRegistry(register_builtins=False)
+        registry.register_compiler("b_compiler", _MockCompiler)
+        registry.register_compiler("a_compiler", _MockCompiler)
+        assert registry.list_compiler() == ["a_compiler", "b_compiler"]
+
+    def test_namespaces_isolated_from_other_providers(self) -> None:
+        """The OCR + compiler namespaces are independent of each other
+        and of the existing ASR / cleanup / insertion / vision ones."""
+        registry = ProviderRegistry(register_builtins=False)
+        registry.register_asr("only_asr", MockASRProvider)
+        registry.register_cleanup("only_cleanup", MockCleanupProvider)
+        registry.register_insertion("only_insertion", MockInsertionStrategy)
+        registry.register_vision("only_vision", _MockVision)
+        registry.register_ocr(_OCR_REG_NAME, _MockOCR)
+        registry.register_compiler(_COMPILER_REG_NAME, _MockCompiler)
+        # All six namespaces independent.
+        assert registry.list_asr() == ["only_asr"]
+        assert registry.list_cleanup() == ["only_cleanup"]
+        assert registry.list_insertion() == ["only_insertion"]
+        assert registry.list_vision() == ["only_vision"]
+        assert registry.list_ocr() == [_OCR_REG_NAME]
+        assert registry.list_compiler() == [_COMPILER_REG_NAME]
+
+
+class _MockVision(VisionProvider):
+    def __init__(self, config):  # type: ignore[no-untyped-def]
+        self.config = config
+
+    def get_name(self) -> str:
+        return "mock_vision"
+
+    def is_available(self) -> bool:
+        return True
+
+    async def extract(self, image_data, instruction, context=None, mime_type="image/png"):  # type: ignore[no-untyped-def,override]
+        return ""

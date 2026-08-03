@@ -147,18 +147,28 @@ def test_indicator_elapsed_ticks_at_least_once(qapp) -> None:
     indicator = ObserverIndicator(bus)
     bus.publish(ObserverSessionStartedEvent(session_uuid="x", session_id=1, started_at_ms=0))
     qapp.processEvents()
-    # Wait 1.1 s; the 1 s timer should fire at least once.
-    started = time.monotonic()
-    while time.monotonic() - started < 1.2:
+
+    def _seconds() -> int:
+        """Seconds shown on the badge. ``REC H:MM:SS``."""
+        label = indicator._label.text()
+        assert label.startswith("REC "), label
+        parts = label.removeprefix("REC ").split(":")
+        assert len(parts) == 3, label
+        return int(parts[2])
+
+    # Pump until the 1 s timer has fired once, then stop — this exits at
+    # ~1.05 s in the normal case. It waits far longer than that before
+    # giving up because a fixed 1.2 s window left only 200 ms of slack on
+    # a 1000 ms QTimer, and a loaded CI runner spent more than that: the
+    # timer fired after the window closed and the badge still read
+    # 0:00:00. What is under test is that the timer fires and the label
+    # advances, not how promptly a shared runner schedules it.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and _seconds() < 1:
         qapp.processEvents()
         time.sleep(0.05)
-    # Label should now read REC 0:00:0X for some X >= 1.
-    label = indicator._label.text()
-    assert label.startswith("REC ")
-    parts = label.removeprefix("REC ").split(":")
-    assert len(parts) == 3
-    seconds = int(parts[2])
-    assert seconds >= 1
+
+    assert _seconds() >= 1, "the 1 s elapsed timer never advanced the badge"
     indicator.stop()
 
 

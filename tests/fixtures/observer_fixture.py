@@ -20,6 +20,7 @@ and delete.
 
 from __future__ import annotations
 
+import datetime
 import io
 from pathlib import Path
 
@@ -32,8 +33,17 @@ from agentvoca.observer.models import (
 from agentvoca.observer.store import ObserverStore
 
 # Fixed base timestamp so the output is byte-identical across runs.
-# 2026-01-15 10:00:00 UTC.
-_BASE_TS_MS = 1_768_466_400_000
+#
+# Derived from a fixed *local* wall clock rather than a fixed epoch. The
+# rules compiler renders every timestamp with ``.astimezone()`` — local
+# time is what a user wants to read — so a hard-coded epoch renders as a
+# different clock time in every timezone, and the committed golden file
+# only matched on a machine in the author's zone. Anchoring the wall
+# clock instead makes the epoch machine-dependent and the *rendering*
+# identical everywhere, which is what the golden compares.
+#
+# 2026-01-15 09:40 local time. Mid-January, so no DST boundary.
+_BASE_TS_MS = int(datetime.datetime(2026, 1, 15, 9, 40).timestamp() * 1000)
 
 # Per-block: (app_name, window_title, [utterance texts], [keyframe texts],
 # selection_text, [extra events]). All text is short and deterministic.

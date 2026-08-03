@@ -86,3 +86,6 @@ voice_dictation_project_outline.md
 *.bak
 *.orig
 $_.FullName
+
+# Golden-file diffs written by tests/unit/test_compile_rules.py on failure
+tests/fixtures/*.actual.md

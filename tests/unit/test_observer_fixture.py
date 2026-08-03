@@ -181,3 +181,27 @@ class TestFixtureOptionalBlocks:
         bundle = store.load_bundle(session_id=session.id)
         assert bundle.events == []
         assert bundle.session.status == "closed"
+
+
+class TestFixtureIsTimezoneInvariant:
+    """The fixture must render the same wall clock in every timezone.
+
+    ``tests/fixtures/expected_session.md`` is a byte-exact golden of the
+    rules compiler's output, and the compiler renders timestamps with
+    ``.astimezone()`` — local time, which is what a user wants to read.
+    A hard-coded epoch therefore rendered as a different clock time on
+    every runner: the golden matched on the author's UTC+1 machine and
+    failed on CI's UTC runner with a same-length, different-content
+    diff. Anchoring the base to a local wall clock fixes the rendering
+    everywhere; this test pins that property.
+    """
+
+    def test_base_timestamp_renders_at_the_golden_wall_clock(self) -> None:
+        from agentvoca.observer.compile.rules import _fmt_date, _fmt_hhmm
+        from tests.fixtures.observer_fixture import _BASE_TS_MS
+
+        assert _fmt_hhmm(_BASE_TS_MS) == "09:40", (
+            "the fixture base no longer renders at the wall clock the golden "
+            "file was generated from — regenerate the golden or restore the anchor"
+        )
+        assert _fmt_date(_BASE_TS_MS) == "15 Jan 2026"

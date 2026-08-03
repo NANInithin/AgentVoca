@@ -28,6 +28,7 @@ import os
 
 import httpx
 
+from agentvoca import __version__
 from agentvoca.config.schema import ObserverCompileConfig
 from agentvoca.observer.compile.base import SessionCompiler, block_window, split_blocks
 from agentvoca.observer.compile.prompts import (
@@ -319,7 +320,7 @@ class OpenAICompatibleCompiler(SessionCompiler):
             "degraded: some blocks used rules rendering" if any_degraded else "LLM summarization"
         )
         footer = (
-            f"*Compiled by AgentVoca v0.4.0 \u00b7 "
+            f"*Compiled by AgentVoca v{__version__} \u00b7 "
             f"openai_compatible compiler \u00b7 {degraded_note}*"
         )
         markdown = f"{header}\n\n{body}\n\n---\n\n{footer}"

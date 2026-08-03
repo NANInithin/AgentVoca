@@ -444,3 +444,89 @@ class TestLifecycle:
         listener.start()  # idempotent
         assert listener._thread is first
         listener.stop()
+
+
+# ── Owned-VAD loading ──────────────────────────────────────────────
+
+
+class _UnloadedVAD:
+    """A VAD that only becomes available after ``start()`` is awaited.
+
+    Mirrors the real ``agentvoca.audio.vad.VAD``: constructing it does
+    nothing, ``start()`` loads silero, and ``is_available`` is False
+    until then.
+    """
+
+    def __init__(self) -> None:
+        self.started = False
+        self.chunks = 0
+
+    @property
+    def is_available(self) -> bool:
+        return self.started
+
+    async def start(self) -> None:
+        self.started = True
+
+    def process_chunk(self, audio_bytes: bytes, timestamp_ms: int) -> bool:
+        self.chunks += 1
+        return True
+
+
+class TestOwnedVADIsLoaded:
+    """Regression: an owned VAD was constructed but never started.
+
+    ``is_available`` therefore stayed False for the listener's whole
+    life and the worker discarded every block, so Observer recorded no
+    ambient speech at all and every session exported empty.
+    """
+
+    def test_owned_vad_is_started_on_the_worker_thread(
+        self, loop_thread: AsyncLoopThread, collected_utterances: list, monkeypatch
+    ) -> None:
+        from agentvoca.observer import audio as audio_module
+
+        made: list[_UnloadedVAD] = []
+
+        def _fake_vad(**_kwargs):
+            v = _UnloadedVAD()
+            made.append(v)
+            return v
+
+        monkeypatch.setattr(audio_module, "VAD", _fake_vad)
+
+        # vad=None → the listener builds and owns one.
+        listener = _make_listener(
+            loop_thread,
+            collected_utterances,
+            vad=None,
+            silence_timeout_ms=60_000,
+            min_utterance_ms=0,
+            max_utterance_ms=60_000,
+        )
+        listener.start()
+        try:
+            for i in range(3):
+                listener.feed(_make_block(i), _ts(i))
+            deadline = time.time() + 2.0
+            while time.time() < deadline and made and made[0].chunks < 3:
+                time.sleep(0.005)
+        finally:
+            listener.stop()
+
+        assert made, "the listener did not construct its own VAD"
+        assert made[0].started, "the owned VAD was never started — blocks are dropped"
+        assert made[0].chunks == 3, "blocks did not reach the VAD"
+
+    def test_injected_vad_is_left_alone(
+        self, loop_thread: AsyncLoopThread, collected_utterances: list
+    ) -> None:
+        # An injected VAD belongs to the caller; the listener must not
+        # try to load it.
+        vad = ScriptedVAD([True] * 3)
+        listener = _make_listener(loop_thread, collected_utterances, vad=vad)
+        listener.start()
+        listener.feed(_make_block(0), _ts(0))
+        time.sleep(0.05)
+        listener.stop()
+        assert vad.calls, "injected VAD should still receive blocks"

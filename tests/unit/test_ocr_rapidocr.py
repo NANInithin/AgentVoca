@@ -146,6 +146,52 @@ class TestContract:
         assert 0.79 < result.confidence < 0.81
 
 
+# ── Engine return shapes ───────────────────────────────────────────
+
+
+class TestReturnShapes:
+    """rapidocr-onnxruntime 1.4.x returns ``(results, elapse_list)``.
+
+    Regression: the provider unconditionally unpacked a three-element
+    ``(boxes, txts, scores)`` triple, so on the pinned 1.4.x wheel every
+    single call raised ``ValueError: not enough values to unpack`` and
+    every keyframe was stored with ``ocr_status='failed'`` and no text.
+    """
+
+    def test_1_4_x_two_tuple_shape(self, monkeypatch) -> None:
+        engine = _FakeEngine()
+        _install_fake_rapidocr(monkeypatch, engine)
+        provider = RapidOCRProvider(config=ObserverOCRConfig())
+
+        # What 1.4.4 actually returns: a list of [box, text, score] and
+        # a list of per-stage timings.
+        engine.next_result = (
+            [
+                [[[10, 10], [20, 10], [20, 20], [10, 20]], "left", 0.9],
+                [[[100, 10], [110, 10], [110, 20], [100, 20]], "right", 0.8],
+                [[[10, 5], [20, 5], [20, 15], [10, 15]], "top", 0.7],
+            ],
+            [1.6, 0.001, 0.11],
+        )
+        result = asyncio.run(provider.extract(b"\xff\xd8fake"))
+        assert result.text == "top\nleft\nright"
+        assert result.confidence is not None
+        assert abs(result.confidence - 0.8) < 0.01
+
+    def test_1_4_x_no_detections(self, monkeypatch) -> None:
+        engine = _FakeEngine()
+        _install_fake_rapidocr(monkeypatch, engine)
+        provider = RapidOCRProvider(config=ObserverOCRConfig())
+
+        # A blank image on 1.4.4 returns (None, None). Empty text is a
+        # success, not a failure.
+        engine.next_result = (None, None)
+        result = asyncio.run(provider.extract(b"\xff\xd8fake"))
+        assert result.text == ""
+        assert result.confidence is None
+        assert result.engine == "rapidocr"
+
+
 # ── Lazy import ────────────────────────────────────────────────────
 
 

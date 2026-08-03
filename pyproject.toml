@@ -1,6 +1,6 @@
 [project]
 name = "agentvoca"
-version = "0.3.6"
+version = "0.4.0"
 description = "A developer-first, model-agnostic voice dictation desktop app."
 readme = "README.md"
 license = { text = "MIT" }

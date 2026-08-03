@@ -221,3 +221,33 @@ def test_tray_observer_submenu_actions_exist(qapp) -> None:
     assert tray.open_last_action is not None
     assert tray.delete_all_action is not None
     tray.stop()
+
+
+# ── Regression: Observer submenu must not look live when it is not ────
+
+
+def test_observer_menu_disabled_until_available(qapp) -> None:
+    """Regression: the tray Observer submenu did nothing and said nothing.
+
+    The submenu was built unconditionally, but ``main.py`` only builds an
+    ``ObserverController`` when ``observer.enabled`` is true. Any config
+    written before v0.4.0 has no ``observer:`` block at all, so the
+    controller was None and the hotkey handler swallowed every click --
+    "Start session" appeared to work and simply did nothing.
+    """
+    bus = EventBus()
+    tray = TrayApp(bus)
+    try:
+        # Default state: not available, and the title says so.
+        assert tray._observer_menu.isEnabled() is False
+        assert "disabled" in tray._observer_menu.title().lower()
+
+        tray.set_observer_available(True)
+        assert tray._observer_menu.isEnabled() is True
+        assert tray._observer_menu.title() == "Observer"
+
+        tray.set_observer_available(False, reason="enable in Settings")
+        assert tray._observer_menu.isEnabled() is False
+        assert "enable in Settings" in tray._observer_menu.title()
+    finally:
+        tray.stop()

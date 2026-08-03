@@ -195,6 +195,353 @@ def _build_registry() -> ProviderRegistry:
     return registry
 
 
+def _build_observer_capture(
+    cfg: FullConfig,
+    orchestrator: "Orchestrator | None",
+    registry: ProviderRegistry,
+    loop_thread: AsyncLoopThread,
+    audio: AudioCapture,
+    observer_controller: object,
+    event_bus: EventBus,
+    store: object,
+) -> tuple:
+    """Build and wire the capture-side Observer objects.
+
+    Returns the (ambient, triggers, grabber, ocr, selection) tuple
+    the controller expects, or a tuple of Nones on any construction
+    failure — a broken Observer must never block dictation.
+
+    Fault isolation matters as much as the wiring here. Each optional
+    subsystem (ambient ASR, OCR, selection) is built inside its own
+    try/except so a single failure costs only that subsystem. The
+    outer try/except is the last resort for a failure in the parts
+    Observer cannot run without (triggers, grabber): one exception
+    there used to return the all-None tuple, which left the tray
+    happily starting sessions that recorded nothing at all.
+    """
+    try:
+        import functools  # noqa: PLC0415
+        import itertools  # noqa: PLC0415
+        import queue as _queue  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        from agentvoca.context.active_app import ActiveAppDetector  # noqa: PLC0415
+        from agentvoca.core.events import ObserverKeyframeEvent  # noqa: PLC0415
+        from agentvoca.observer.arbiter import ASRArbiter  # noqa: PLC0415
+        from agentvoca.observer.audio import AmbientListener  # noqa: PLC0415
+        from agentvoca.observer.models import Grab, ObserverEvent  # noqa: PLC0415
+        from agentvoca.observer.privacy import ExclusionMatcher  # noqa: PLC0415
+        from agentvoca.observer.screen import ScreenGrabber  # noqa: PLC0415
+        from agentvoca.observer.triggers import TriggerEngine, TriggerGate  # noqa: PLC0415
+
+        active_app = ActiveAppDetector()
+        exclusions = ExclusionMatcher(cfg.observer.privacy)
+        # The SessionManager, not the ObserverSession. ``sessions.record``
+        # is the only write path that honours the pause carve-out.
+        sessions = observer_controller.sessions
+
+        # ── Ambient speech ──────────────────────────────────────────
+        asr_arbiter: ASRArbiter | None = None
+        if orchestrator is not None and getattr(orchestrator, "_asr_provider", None) is not None:
+
+            def _on_ambient_text(text: str, ts_ms: int, duration_ms: int) -> None:
+                """Store one ambient transcription. Runs on the loop thread."""
+                if not text.strip():
+                    return
+                recorded = sessions.record(
+                    "utterance_ambient",
+                    text=text,
+                    meta={"duration_ms": duration_ms},
+                    ts_ms=ts_ms,
+                )
+                if recorded is None:
+                    return  # no session open, or capture is paused
+                event_bus.publish(
+                    ObserverUtteranceEvent(text=text, source="ambient", duration_ms=duration_ms)
+                )
+
+            async def _start_arbiter() -> ASRArbiter:
+                """Construct and start the arbiter ON the loop thread.
+
+                ``ASRArbiter.start`` calls ``asyncio.get_running_loop()``
+                and ``loop.create_task``. This function runs on the Qt
+                thread, where there is no running loop, so calling
+                ``start()`` directly raises RuntimeError.
+                """
+                arbiter = ASRArbiter(
+                    provider=orchestrator._asr_provider,
+                    queue_depth=cfg.observer.ocr.max_queue,
+                )
+                arbiter.start(on_text=_on_ambient_text)
+                return arbiter
+
+            try:
+                asr_arbiter = loop_thread.submit(_start_arbiter()).result(timeout=10.0)
+                orchestrator.attach_asr_arbiter(asr_arbiter)
+            except Exception:
+                logger.exception(
+                    "Observer ambient ASR could not start; continuing without ambient "
+                    "speech (screen capture is unaffected)"
+                )
+                asr_arbiter = None
+
+        # ── OCR + selection (both optional) ─────────────────────────
+        try:
+            ocr_provider = registry.get_ocr(cfg.observer.ocr)
+        except Exception:
+            logger.exception(
+                "Observer OCR provider '%s' is unavailable; keyframes will be stored without text",
+                cfg.observer.ocr.provider,
+            )
+            ocr_provider = None
+
+        selection_reader: object | None = None
+        if cfg.observer.selection.enabled:
+            try:
+                if cfg.observer.selection.method == "uia" and sys.platform == "win32":
+                    from agentvoca.observer.selection.windows_uia import (  # noqa: PLC0415
+                        WindowsUIASelectionReader,
+                    )
+
+                    selection_reader = WindowsUIASelectionReader(
+                        max_chars=cfg.observer.selection.max_chars,
+                        active_app=active_app,
+                    )
+                else:
+                    from agentvoca.observer.selection.noop import (  # noqa: PLC0415
+                        NoopSelectionReader,
+                    )
+
+                    selection_reader = NoopSelectionReader()
+            except Exception:
+                logger.exception("Observer selection reader unavailable; continuing without it")
+                selection_reader = None
+
+        # ── Keyframe pipeline: gate → grabber → store → OCR ─────────
+        grabber = ScreenGrabber(
+            config=cfg.observer.screen,
+            active_app=active_app,
+        )
+        # Running blob total per session uuid, so the per-session cap
+        # costs a dict lookup instead of a directory walk per keyframe.
+        blob_bytes: dict[str, int] = {}
+        capped_sessions: set[str] = set()
+        blob_seq = itertools.count()
+        # Which exclusion pattern currently holds capture down, if any.
+        # Used to emit exactly one pause_start / pause_end pair.
+        exclusion_state = {"pattern": ""}
+
+        def _record_gap(reason: str, dropped: int) -> None:
+            """Timeline row for data we intentionally dropped."""
+            sessions.record("gap", meta={"reason": reason, "dropped": dropped})
+
+        def _is_excluded() -> bool:
+            """Gate hook: is the foreground app/title privacy-excluded?
+
+            Also emits the ``pause_start`` / ``pause_end`` pair so the
+            timeline shows the gap. Neither row carries the app name or
+            title — recording those would leak exactly what the
+            exclusion list exists to keep out of the archive.
+            """
+            try:
+                app_name, window_title = active_app.detect()
+            except Exception:
+                logger.debug("active-app detect failed in exclusion check", exc_info=True)
+                return False
+            excluded, pattern = exclusions.is_excluded(app_name, window_title)
+            if excluded:
+                if not exclusion_state["pattern"]:
+                    exclusion_state["pattern"] = pattern or "excluded"
+                    sessions.record(
+                        "pause_start",
+                        meta={"reason": "excluded_app", "pattern": pattern or ""},
+                    )
+            elif exclusion_state["pattern"]:
+                exclusion_state["pattern"] = ""
+                sessions.record("pause_end", meta={"reason": "excluded_app"})
+            return excluded
+
+        def _write_blob(session_uuid: str, jpeg: bytes) -> str | None:
+            """Write a keyframe JPEG; return its path relative to storage.
+
+            Relative so the whole archive can be moved (contracts §3).
+            Returns None when the per-session cap is hit or the write
+            fails — the caller then skips the row entirely rather than
+            storing an event that points at nothing.
+            """
+            cap = cfg.observer.storage.max_session_mb * 1024 * 1024
+            written = blob_bytes.get(session_uuid, 0)
+            if cap and written + len(jpeg) > cap:
+                if session_uuid not in capped_sessions:
+                    capped_sessions.add(session_uuid)
+                    _record_gap("disk_cap", 1)
+                    logger.warning(
+                        "Observer: session blob cap (%d MB) reached; keyframes are no "
+                        "longer stored for this session",
+                        cfg.observer.storage.max_session_mb,
+                    )
+                return None
+            name = f"{int(_time.time() * 1000)}-{next(blob_seq)}.jpg"
+            try:
+                directory = store.blobs_dir / session_uuid
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / name).write_bytes(jpeg)
+            except OSError:
+                logger.warning("Observer: could not write keyframe blob", exc_info=True)
+                return None
+            blob_bytes[session_uuid] = written + len(jpeg)
+            return f"blobs/{session_uuid}/{name}"
+
+        async def _run_ocr(event_id: int, jpeg: bytes) -> None:
+            """Extract text for one keyframe and patch its row.
+
+            Runs on the loop thread. A failed extraction is recorded as
+            ``ocr_status='failed'`` rather than dropped: the keyframe
+            itself is still real, and the compiler needs to know the
+            text is missing rather than empty.
+            """
+            started = _time.time()
+            try:
+                result = await ocr_provider.extract(jpeg)
+            except Exception:
+                logger.debug("Observer OCR failed for event %d", event_id, exc_info=True)
+                store.set_event_text(event_id, "", {"ocr_status": "failed"})
+                return
+            meta_update = {
+                "ocr_status": "ok",
+                "ocr_ms": result.latency_ms or int((_time.time() - started) * 1000),
+                "ocr_engine": result.engine,
+            }
+            if result.confidence is not None:
+                meta_update["ocr_confidence"] = result.confidence
+            store.set_event_text(event_id, result.text, meta_update)
+
+        def _record_selection() -> None:
+            """Read the highlighted text after a drag-select."""
+            if selection_reader is None:
+                return
+            try:
+                selection = selection_reader.read_selection()
+            except Exception:
+                logger.debug("Observer: selection read failed", exc_info=True)
+                return
+            if selection is None or not selection.text.strip():
+                return
+            sessions.record(
+                "selection",
+                app_name=selection.app_name,
+                window_title=selection.window_title,
+                text=selection.text,
+                meta={
+                    "method": selection.method,
+                    "truncated": selection.truncated,
+                    "chars": len(selection.text),
+                },
+            )
+
+        def _on_keyframe_grab(reason: str, grab: "Grab | None") -> None:
+            """Store one keyframe. Runs on the ``observer-capture`` thread."""
+            if reason == "selection":
+                _record_selection()
+            if grab is None:
+                return  # degenerate rect, or a dedup hit — both already counted
+            session = sessions.current
+            if session is None or observer_controller.is_paused:
+                return  # the session closed or paused between gate and grab
+            blob_path = _write_blob(session.uuid, grab.jpeg)
+            if blob_path is None:
+                return
+            try:
+                event_id = store.append_returning_id(
+                    ObserverEvent(
+                        id=0,
+                        session_id=session.id,
+                        ts_ms=int(_time.time() * 1000),
+                        kind="keyframe",
+                        app_name=grab.app_name,
+                        window_title=grab.window_title,
+                        text=None,
+                        blob_path=blob_path,
+                        meta={
+                            "trigger": reason,
+                            "dhash": grab.dhash,
+                            "width": grab.width,
+                            "height": grab.height,
+                        },
+                    )
+                )
+            except Exception:
+                logger.warning("Observer: keyframe row insert failed", exc_info=True)
+                return
+            event_bus.publish(
+                ObserverKeyframeEvent(
+                    event_id=event_id,
+                    trigger=reason,
+                    app_name=grab.app_name,
+                )
+            )
+            if ocr_provider is not None:
+                loop_thread.submit(_run_ocr(event_id, grab.jpeg))
+
+        def _enqueue_keyframe(reason: str) -> None:
+            """Gate → capture worker.
+
+            Called from the pynput listener thread among others, so it
+            must return in microseconds: a bounded ``put_nowait`` and
+            nothing else. ``queue.Full`` is the gate's signal to count
+            the drop and record a gap.
+            """
+            if not grabber.submit(reason, functools.partial(_on_keyframe_grab, reason)):
+                raise _queue.Full
+
+        gate = TriggerGate(
+            min_interval_ms=cfg.observer.triggers.min_interval_ms,
+            max_keyframes_per_min=cfg.observer.triggers.max_keyframes_per_min,
+            enqueue=_enqueue_keyframe,
+            is_session_active=lambda: observer_controller.is_active,
+            is_paused=lambda: observer_controller.is_paused,
+            is_excluded=_is_excluded,
+            on_gap=_record_gap,
+        )
+        trigger_engine = TriggerEngine(
+            config=cfg.observer.triggers,
+            session=sessions,
+            active_app=active_app,
+            gate=gate,
+        )
+
+        def _submit_ambient(audio: bytes, ts_ms: int, duration_ms: int) -> None:
+            if asr_arbiter is None:
+                return
+            asr_arbiter.submit_ambient(
+                audio,
+                ts_ms=ts_ms,
+                duration_ms=duration_ms,
+                sample_rate=cfg.audio.sample_rate,
+            )
+
+        ambient_listener = AmbientListener(
+            event_bus=event_bus,
+            loop=loop_thread.loop,
+            on_utterance=_submit_ambient,
+            sample_rate=cfg.audio.sample_rate,
+            on_speech_onset=trigger_engine.on_speech_onset,
+        )
+
+        audio.set_ambient_sink(ambient_listener)
+
+        logger.info(
+            "Observer capture wired: ambient_asr=%s ocr=%s selection=%s",
+            asr_arbiter is not None,
+            cfg.observer.ocr.provider if ocr_provider is not None else "none",
+            selection_reader is not None,
+        )
+        return (ambient_listener, trigger_engine, grabber, ocr_provider, selection_reader)
+    except Exception:
+        logger.exception("Observer capture construction failed; observer will run in disabled mode")
+        return (None, None, None, None, None)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse arguments, load config, and start the application.
 
@@ -314,124 +661,6 @@ def main(argv: list[str] | None = None) -> int:
     # the cold-start import path lean.
     observer_controller: object | None = None
 
-    def _build_observer_capture(
-        cfg: FullConfig,
-        orchestrator: "Orchestrator | None",
-        registry: ProviderRegistry,
-        loop_thread: AsyncLoopThread,
-        audio: AudioCapture,
-        observer_controller: object,
-        event_bus: EventBus,
-    ) -> tuple:
-        """Build and wire the capture-side Observer objects.
-
-        Returns the (ambient, triggers, grabber, ocr, selection) tuple
-        the controller expects, or a tuple of Nones on any construction
-        failure — a broken Observer must never block dictation.
-        """
-        try:
-            from agentvoca.context.active_app import ActiveAppDetector  # noqa: PLC0415
-            from agentvoca.observer.arbiter import ASRArbiter  # noqa: PLC0415
-            from agentvoca.observer.audio import AmbientListener  # noqa: PLC0415
-            from agentvoca.observer.screen import ScreenGrabber  # noqa: PLC0415
-            from agentvoca.observer.triggers import TriggerEngine, TriggerGate  # noqa: PLC0415
-
-            active_app = ActiveAppDetector()
-
-            # ASR arbiter — wrap the existing ASR provider so dictation
-            # never waits on ambient.
-            asr_arbiter: ASRArbiter | None = None
-            if (
-                orchestrator is not None
-                and getattr(orchestrator, "_asr_provider", None) is not None
-            ):
-
-                def _on_ambient_text(text: str, ts_ms: int, duration_ms: int) -> None:
-                    if not observer_controller.is_active:
-                        return
-                    session = observer_controller.sessions.current
-                    if session is None:
-                        return
-                    session.record(
-                        "utterance_ambient",
-                        text=text,
-                        meta={"duration_ms": duration_ms},
-                        ts_ms=ts_ms,
-                    )
-                    observer_controller.event_bus.publish(
-                        ObserverUtteranceEvent(text=text, source="ambient", duration_ms=duration_ms)
-                    )
-
-                asr_arbiter = ASRArbiter(
-                    provider=orchestrator._asr_provider,
-                    queue_depth=cfg.observer.ocr.max_queue,
-                )
-                asr_arbiter.start(on_text=_on_ambient_text)
-                orchestrator.attach_asr_arbiter(asr_arbiter)
-
-            ocr_provider = registry.get_ocr(cfg.observer.ocr)
-
-            if cfg.observer.selection.method == "uia" and sys.platform == "win32":
-                from agentvoca.observer.selection.windows_uia import (  # noqa: PLC0415
-                    WindowsUIASelectionReader,
-                )
-
-                selection_reader = WindowsUIASelectionReader(
-                    max_chars=cfg.observer.selection.max_chars,
-                    active_app=active_app,
-                )
-            else:
-                from agentvoca.observer.selection.noop import (  # noqa: PLC0415
-                    NoopSelectionReader,
-                )
-
-                selection_reader = NoopSelectionReader()
-
-            grabber = ScreenGrabber(
-                config=cfg.observer.screen,
-                active_app=active_app,
-            )
-
-            gate = TriggerGate(
-                min_interval_ms=cfg.observer.triggers.min_interval_ms,
-                max_keyframes_per_min=cfg.observer.triggers.max_keyframes_per_min,
-                is_session_active=lambda: observer_controller.is_active,
-                is_paused=lambda: observer_controller.is_paused,
-            )
-            trigger_engine = TriggerEngine(
-                config=cfg.observer.triggers,
-                session=observer_controller.sessions,
-                active_app=active_app,
-                gate=gate,
-            )
-
-            def _submit_ambient(audio: bytes, ts_ms: int, duration_ms: int) -> None:
-                if asr_arbiter is None:
-                    return
-                asr_arbiter.submit_ambient(
-                    audio,
-                    ts_ms=ts_ms,
-                    duration_ms=duration_ms,
-                    sample_rate=cfg.audio.sample_rate,
-                )
-
-            ambient_listener = AmbientListener(
-                event_bus=event_bus,
-                loop=loop_thread.loop,
-                on_utterance=_submit_ambient,
-                sample_rate=cfg.audio.sample_rate,
-                on_speech_onset=trigger_engine.on_speech_onset,
-            )
-
-            audio.set_ambient_sink(ambient_listener)
-
-            return (ambient_listener, trigger_engine, grabber, ocr_provider, selection_reader)
-        except Exception:
-            logger.exception(
-                "Observer capture construction failed; observer will run in disabled mode"
-            )
-            return (None, None, None, None, None)
-
     # ── UI scaffolding (tray, overlay) ───────────────────────────────
     # Built up front so the user has a UI surface immediately, even before
     # the heavy pipeline exists.
@@ -517,6 +746,22 @@ def main(argv: list[str] | None = None) -> int:
 
     event_bus.subscribe(ErrorEvent, on_error)
 
+    def _notify_observer_unavailable() -> None:
+        """Tell the user why an Observer action did nothing.
+
+        Reached when the tray/hotkey fires but no ``ObserverController``
+        was built — i.e. ``observer.enabled`` is false (the default, and
+        the case for any config written before v0.4.0), or construction
+        failed. Without this the click is swallowed silently, which reads
+        as a broken feature.
+        """
+        logger.info("Observer action ignored: observer is not enabled in config")
+        tray.show_message(
+            "Observer is off",
+            "Enable Observer in Settings → Observer, then restart AgentVoca.",
+            icon=1,
+        )
+
     def on_hotkey(event: object) -> None:
         from agentvoca.core.events import StateChangedEvent  # noqa: PLC0415
 
@@ -561,12 +806,16 @@ def main(argv: list[str] | None = None) -> int:
         elif action == "toggle_observer":
             if observer_controller is not None:
                 observer_controller.toggle_session()
+            else:
+                _notify_observer_unavailable()
         elif action == "pause_observer":
             if observer_controller is not None:
                 if observer_controller.is_paused:
                     observer_controller.resume()
                 else:
                     observer_controller.pause()
+            else:
+                _notify_observer_unavailable()
 
     event_bus.subscribe(HotkeyEvent, on_hotkey)
 
@@ -635,6 +884,13 @@ def main(argv: list[str] | None = None) -> int:
                     event_bus=event_bus,
                     sample_rate=cfg.audio.sample_rate,
                 )
+                # Constructing a VAD does not load silero — ``start()``
+                # does, and ``is_available`` stays False until it has run.
+                # Without this the check below always failed, so auto-stop
+                # was silently off on every machine, however healthy the
+                # install. Loaded on the loop thread: it is ~1 s of torch
+                # work and the Qt thread must not stall on it.
+                loop_thread.submit(vad.start()).result(timeout=60.0)
                 if not vad.is_available:
                     logger.warning("VAD requested but silero is unavailable — auto-stop disabled")
                     vad = None
@@ -706,6 +962,7 @@ def main(argv: list[str] | None = None) -> int:
                     audio=audio,
                     observer_controller=observer_controller,
                     event_bus=event_bus,
+                    store=observer_store,
                 )
             )
             # TRACK 3 REPLACES THIS LINE:
@@ -743,6 +1000,14 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 logger.exception("Failed to attach Observer surface; degrading to no-compile")
                 observer_controller.attach_surface(None, None, None)
+
+        # Only now does the tray know whether Observer can actually run.
+        # Leaving the submenu live when the controller is None made every
+        # click a silent no-op.
+        tray.set_observer_available(
+            observer_controller is not None,
+            reason="enable in Settings",
+        )
         return True
 
     # ── First-run gate ────────────────────────────────────────────────

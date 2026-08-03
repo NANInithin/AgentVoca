@@ -499,6 +499,9 @@ class TestMainStartupWithObserver:
             open_wizard_action=SimpleNamespace(triggered=MagicMock()),
             quit_action=SimpleNamespace(triggered=MagicMock()),
             show_message=lambda *a, **k: None,
+            # main.py calls this once it knows whether an
+            # ObserverController was built (v0.4.0).
+            set_observer_available=lambda *a, **k: None,
         )
 
         from agentvoca.setup.first_run import AppState
@@ -542,6 +545,9 @@ class TestMainStartupWithObserver:
             open_wizard_action=SimpleNamespace(triggered=MagicMock()),
             quit_action=SimpleNamespace(triggered=MagicMock()),
             show_message=lambda *a, **k: None,
+            # main.py calls this once it knows whether an
+            # ObserverController was built (v0.4.0).
+            set_observer_available=lambda *a, **k: None,
         )
 
         class FakeApp:

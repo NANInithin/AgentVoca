@@ -205,9 +205,36 @@ class AmbientListener:
 
     # ── Worker ──────────────────────────────────────────────────────
 
+    def _ensure_vad_loaded(self) -> None:
+        """Load the owned VAD's model. Runs on the worker thread.
+
+        Constructing a ``VAD`` does not load silero — ``VAD.start()`` does,
+        and ``is_available`` stays False until it has run. Without this
+        the worker below discarded every single block at DEBUG level, so
+        Observer heard nothing and every session exported as empty.
+
+        The load takes ~1 s of torch work, which is why it happens here
+        rather than in ``start()``: the Qt thread must not pay for it. An
+        injected VAD belongs to the caller, who is responsible for having
+        loaded it.
+        """
+        if not self._owns_vad or self._vad is None or self._vad.is_available:
+            return
+        start = getattr(self._vad, "start", None)
+        if not callable(start):
+            return
+        try:
+            asyncio.run(start())
+        except Exception:
+            logger.warning(
+                "AmbientListener: silero VAD failed to load; ambient speech will not be segmented",
+                exc_info=True,
+            )
+
     def _worker_loop(self) -> None:
         """Owned by the worker thread. Drains the queue, runs VAD."""
         assert self._vad is not None
+        self._ensure_vad_loaded()
         while True:
             item = self._queue.get()
             if item is _SENTINEL_STOP:

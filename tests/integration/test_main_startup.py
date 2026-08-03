@@ -138,6 +138,9 @@ def _install_fakes(monkeypatch, order: list[str], *, wizard_saves: bool = False)
         open_wizard_action=SimpleNamespace(triggered=MagicMock()),
         quit_action=SimpleNamespace(triggered=MagicMock()),
         show_message=lambda *a, **k: None,
+        # main.py calls this once it knows whether an ObserverController
+        # was built (v0.4.0). Fakes must carry it or startup raises.
+        set_observer_available=lambda *a, **k: None,
     )
 
     # Keep state.json out of the picture (it lives in the real home dir):

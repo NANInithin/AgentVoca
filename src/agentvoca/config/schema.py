@@ -34,6 +34,37 @@ def _validate_hotkey(value: str, field_name: str) -> str:
     return value
 
 
+# ── Provider locality ──────────────────────────────────────────────
+# Providers that run entirely on this machine. They ignore ``endpoint``
+# and ``api_key_env`` completely, so those fields must never be treated
+# as a signal that a key is required. Anything not listed here is
+# assumed remote when an endpoint is configured — the safe default, so
+# a newly-added cloud provider is key-checked without touching this set.
+_LOCAL_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "faster_whisper",  # ASR — local whisper.cpp/ctranslate2
+        "rules",  # cleanup — deterministic, no model
+        "none",  # cleanup / OCR — pass-through
+        "rapidocr",  # observer OCR — local ONNX
+    }
+)
+
+
+def _is_remote(provider: str, endpoint: Optional[str]) -> bool:
+    """Return True when ``provider`` needs network access for this config.
+
+    Args:
+        provider: The configured provider name.
+        endpoint: The configured endpoint, if any.
+
+    Returns:
+        True only when the provider is not known-local *and* an endpoint
+        is set. See ``FullConfig._validate_api_key_env`` for why both
+        conditions are required.
+    """
+    return provider not in _LOCAL_PROVIDERS and endpoint is not None
+
+
 # ── Config Models ──────────────────────────────────────────────────
 
 
@@ -516,16 +547,31 @@ class FullConfig(BaseModel):
     def _validate_api_key_env(self) -> "FullConfig":
         """Check that api_key_env vars are set when a provider is remote.
 
-        A provider is considered 'remote' when ``endpoint`` is set.
+        A provider is remote when it is **not** a known local provider and
+        an ``endpoint`` is configured. Both halves matter:
+
+        - Endpoint presence alone is not enough. Switching the wizard from
+          Cloud back to Local leaves the previous ``endpoint`` /
+          ``api_key_env`` in the config, and a purely local provider such as
+          ``faster_whisper`` never reads either field. Keying off the
+          endpoint alone made those stale values fatal, producing the
+          self-contradictory "ASR provider 'faster_whisper' requires an API
+          key" error at startup and blocking offline mode entirely.
+        - The provider alone is not enough either: a remote provider with no
+          endpoint falls back to its built-in default host, which may
+          legitimately need no key.
         """
-        if self.asr.endpoint is not None and self.asr.api_key_env is not None:
+        if _is_remote(self.asr.provider, self.asr.endpoint) and self.asr.api_key_env is not None:
             if self.asr.api_key_env not in os.environ:
                 raise ConfigError(
                     f"ASR provider '{self.asr.provider}' requires an API key. "
                     f"Set env var '{self.asr.api_key_env}'."
                 )
 
-        if self.cleanup.endpoint is not None and self.cleanup.api_key_env is not None:
+        if (
+            _is_remote(self.cleanup.provider, self.cleanup.endpoint)
+            and self.cleanup.api_key_env is not None
+        ):
             if self.cleanup.api_key_env not in os.environ:
                 raise ConfigError(
                     f"Cleanup provider '{self.cleanup.provider}' requires an API key. "
@@ -550,7 +596,7 @@ class FullConfig(BaseModel):
                 ("OCR", self.observer.ocr),
                 ("compiler", self.observer.compile),
             ):
-                if block.endpoint is not None and block.api_key_env:
+                if _is_remote(block.provider, block.endpoint) and block.api_key_env:
                     if block.api_key_env not in os.environ:
                         raise ConfigError(
                             f"Observer {name} provider '{block.provider}' requires an API key. "

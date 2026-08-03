@@ -133,7 +133,13 @@ class TrayApp(QtCore.QObject):
         # v0.4.0: Observer submenu. Actions are wired to signals the
         # controller subscribes to (or the actions are no-ops if the
         # controller is not attached).
-        self._observer_menu = self._menu.addMenu("Observer")
+        # Disabled until ``set_observer_available(True)`` is called. The
+        # host only enables Observer when ``observer.enabled`` is set AND
+        # the controller was built, so a greyed-out menu is the honest
+        # state rather than a live-looking item that silently does nothing.
+        self._observer_menu = self._menu.addMenu("Observer (disabled)")
+        self._observer_menu.setEnabled(False)
+        self._observer_available = False
         self._toggle_session_action = self._observer_menu.addAction("Start session")
         self._toggle_session_action.triggered.connect(
             lambda: self._emit_observer_action("toggle_session")
@@ -262,6 +268,29 @@ class TrayApp(QtCore.QObject):
         self._tray.hide()
 
     # ── v0.4.0 Observer ───────────────────────────────────────────
+
+    def set_observer_available(self, available: bool, reason: str = "") -> None:
+        """Enable or disable the Observer submenu.
+
+        Called by ``main.py`` once it knows whether an ``ObserverController``
+        exists. When Observer is off in config, or its construction failed,
+        the submenu is greyed out and its title says so — previously the
+        menu looked live but every click was swallowed by a ``None`` check
+        in the hotkey handler, so nothing happened and nothing was logged
+        above DEBUG.
+
+        Args:
+            available: True when a controller is wired and usable.
+            reason: Short text appended to the menu title when unavailable,
+                e.g. "enable in Settings".
+        """
+        self._observer_available = available
+        self._observer_menu.setEnabled(available)
+        if available:
+            self._observer_menu.setTitle("Observer")
+        else:
+            suffix = reason or "disabled"
+            self._observer_menu.setTitle(f"Observer ({suffix})")
 
     def _emit_observer_action(self, action: str) -> None:
         """Forward a tray Observer submenu action to subscribed listeners.

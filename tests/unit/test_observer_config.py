@@ -28,6 +28,7 @@ import pytest
 from agentvoca.config.loader import load_config_from_dict
 from agentvoca.config.schema import (
     ASRConfig,
+    CleanupConfig,
     FullConfig,
     HotkeysConfig,
     ObserverCompileConfig,
@@ -452,3 +453,73 @@ def test_existing_v036_config_still_loads(tmp_path: Path) -> None:
     cfg = load_config(config)
     assert cfg.observer.enabled is False
     assert cfg.observer.storage.dir == "~/.agentvoca/observer"
+
+
+# ── Regression: local providers must never demand an API key ──────────
+
+
+def test_local_asr_with_stale_cloud_endpoint_still_loads(monkeypatch) -> None:
+    """Regression: offline mode was blocked by leftover cloud fields.
+
+    Switching the wizard from Cloud back to Local changes
+    ``asr.provider`` to ``faster_whisper`` but leaves the previous
+    ``endpoint`` / ``api_key_env`` in the config. The validator used to
+    infer "remote" from endpoint presence alone, so it demanded
+    OPENROUTER_API_KEY for a provider that runs entirely on-device --
+    surfacing the self-contradictory "ASR provider 'faster_whisper'
+    requires an API key" dialog and making offline mode unreachable.
+    """
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = FullConfig(
+        asr=ASRConfig(
+            provider="faster_whisper",
+            model="base",
+            endpoint="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        )
+    )
+    assert cfg.asr.provider == "faster_whisper"
+
+
+def test_local_cleanup_with_stale_cloud_endpoint_still_loads(monkeypatch) -> None:
+    """Same stale-field problem on the cleanup block."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = FullConfig(
+        asr=ASRConfig(provider="faster_whisper", model="base"),
+        cleanup=CleanupConfig(
+            provider="rules",
+            endpoint="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        ),
+    )
+    assert cfg.cleanup.provider == "rules"
+
+
+def test_remote_asr_without_key_still_raises(monkeypatch) -> None:
+    """The fix must not weaken the real check for genuinely remote providers."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with pytest.raises(ConfigError, match="requires an API key"):
+        FullConfig(
+            asr=ASRConfig(
+                provider="openai_compatible",
+                endpoint="https://openrouter.ai/api/v1",
+                api_key_env="OPENROUTER_API_KEY",
+            )
+        )
+
+
+def test_observer_local_ocr_with_stale_endpoint_still_loads(monkeypatch) -> None:
+    """rapidocr is local: a stale endpoint must not demand a key."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = FullConfig(
+        asr=ASRConfig(provider="faster_whisper", model="base"),
+        observer=ObserverConfig(
+            enabled=True,
+            ocr=ObserverOCRConfig(
+                provider="rapidocr",
+                endpoint="https://openrouter.ai/api/v1",
+                api_key_env="OPENROUTER_API_KEY",
+            ),
+        ),
+    )
+    assert cfg.observer.ocr.provider == "rapidocr"

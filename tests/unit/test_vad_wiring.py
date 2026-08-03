@@ -122,6 +122,9 @@ def _install_fakes(monkeypatch, audio_capture_kwargs_out: list[dict], vad_ctor: 
         open_wizard_action=SimpleNamespace(triggered=MagicMock()),
         quit_action=SimpleNamespace(triggered=MagicMock()),
         show_message=lambda *a, **k: None,
+        # main.py calls this once it knows whether an ObserverController
+        # was built (v0.4.0). Fakes must carry it or startup raises.
+        set_observer_available=lambda *a, **k: None,
     )
 
     from agentvoca.setup.first_run import AppState
@@ -142,12 +145,50 @@ def _write_minimal_config(path: Path) -> None:
     path.write_text("asr:\n  provider: faster_whisper\n  model: base\n", encoding="utf-8")
 
 
+class _FakeVAD:
+    """Models the real ``VAD`` contract, which a MagicMock does not.
+
+    The distinction matters: constructing a ``VAD`` loads nothing, and
+    ``is_available`` stays False until ``start()`` has been awaited. A
+    MagicMock reports ``is_available`` True straight away, which is why
+    the original tests here passed while auto-stop was dead in the real
+    app — main.py never called ``start()``.
+
+    Args:
+        available_after_start: What ``is_available`` becomes once
+            ``start()`` completes. False models a silero install that
+            loads but cannot run.
+        start_error: When set, ``start()`` raises it.
+    """
+
+    def __init__(
+        self,
+        *,
+        available_after_start: bool = True,
+        start_error: Exception | None = None,
+    ) -> None:
+        self._available_after_start = available_after_start
+        self._start_error = start_error
+        self.started = False
+        self.is_available = False
+
+    async def start(self) -> None:
+        if self._start_error is not None:
+            raise self._start_error
+        self.started = True
+        self.is_available = self._available_after_start
+
+
 def test_vad_enabled_passes_vad_instance_to_audio_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """audio.vad_enabled: True + a healthy VAD → AudioCapture gets a non-None vad."""
-    vad_instance = MagicMock(name="VADInstance")
-    vad_instance.is_available = True
+    """audio.vad_enabled: True + a healthy VAD → AudioCapture gets a non-None vad.
+
+    Also pins the load: ``main`` must await ``VAD.start()``, or the
+    instance it hands to AudioCapture reports ``is_available`` False for
+    ever and the VAD worker discards every block.
+    """
+    vad_instance = _FakeVAD(available_after_start=True)
     vad_ctor = MagicMock(return_value=vad_instance)
 
     kwargs_out: list[dict] = []
@@ -163,6 +204,8 @@ def test_vad_enabled_passes_vad_instance_to_audio_capture(
         f"Expected AudioCapture to receive the VAD instance, got {kwargs_out[0].get('vad')!r}"
     )
     assert vad_ctor.called, "VAD() was not constructed"
+    assert vad_instance.started, "main() never awaited VAD.start() — silero is not loaded"
+    assert vad_instance.is_available, "the VAD handed to AudioCapture is not usable"
 
 
 def test_vad_disabled_passes_none_to_audio_capture(
@@ -215,13 +258,12 @@ def test_vad_init_failure_does_not_prevent_startup(
 def test_vad_unavailable_after_init_disables_vad(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """VAD constructed successfully but ``is_available`` is False → vad=None.
+    """VAD starts successfully but ``is_available`` is still False → vad=None.
 
     A silero install that loads but reports unavailable (e.g. unsupported
     platform) should not block startup either.
     """
-    vad_instance = MagicMock(name="VADInstance")
-    vad_instance.is_available = False  # silero loaded but unavailable
+    vad_instance = _FakeVAD(available_after_start=False)
     vad_ctor = MagicMock(return_value=vad_instance)
 
     kwargs_out: list[dict] = []
@@ -232,6 +274,29 @@ def test_vad_unavailable_after_init_disables_vad(
 
     rc = m.main(["--config", str(config_path)])
     assert rc == 0
+    assert vad_instance.started, "main() must still attempt the load before giving up"
+    assert kwargs_out[0].get("vad") is None
+
+
+def test_vad_load_failure_does_not_prevent_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``VAD.start()`` raising must degrade to vad=None, not crash startup.
+
+    Construction succeeding and the model load failing are different
+    failures; only the first was covered before.
+    """
+    vad_instance = _FakeVAD(start_error=RuntimeError("simulated silero load failure"))
+    vad_ctor = MagicMock(return_value=vad_instance)
+
+    kwargs_out: list[dict] = []
+    _install_fakes(monkeypatch, kwargs_out, vad_ctor)
+
+    config_path = tmp_path / "config.yaml"
+    _write_minimal_config(config_path)
+
+    rc = m.main(["--config", str(config_path)])
+    assert rc == 0, "main() must not crash when the VAD model fails to load"
     assert kwargs_out[0].get("vad") is None
 
 

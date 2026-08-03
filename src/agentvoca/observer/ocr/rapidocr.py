@@ -79,9 +79,8 @@ class RapidOCRProvider(OCRProvider):
     async def extract(self, image_jpeg: bytes, *, hint: Optional[str] = None) -> OCRResult:
         """Run OCR on a JPEG. Returns ``OCRResult`` with reading-order text.
 
-        The engine returns ``(boxes, txts, scores)`` per call. We sort
-        the lines by box top-left y, then x, and join with newlines. The
-        mean of scores is the confidence.
+        Lines are sorted by box top-left y, then x, and joined with
+        newlines. The mean of the per-line scores is the confidence.
         """
         start = time.perf_counter()
         try:
@@ -91,54 +90,31 @@ class RapidOCRProvider(OCRProvider):
             logger.debug("RapidOCR extract failed: %s", exc)
             raise
         elapsed_ms = int((time.perf_counter() - start) * 1000)
-        if result is None:
+        lines = _normalize_result(result)
+        if not lines:
             return OCRResult(text="", confidence=None, latency_ms=elapsed_ms, engine="rapidocr")
-        boxes, txts, scores = result
-        if not txts:
-            return OCRResult(text="", confidence=None, latency_ms=elapsed_ms, engine="rapidocr")
-        # Sort by (top_y, left_x) for reading order.
-        indexed = list(enumerate(txts))
-        if boxes is not None and len(boxes) == len(txts):
+
+        def _key(line: tuple[Any, str, Any]) -> tuple[float, float]:
+            """Reading order: top-left corner of the box, y then x."""
+            box = line[0]
             try:
-                indexed.sort(
-                    key=lambda i_b: (
-                        float(i_b[1][0][1]) if i_b[1] else 0.0,  # not used
-                        # Use box coords for the sort.
-                        0.0,
-                    )
-                )
-            except Exception:
-                pass
+                return (float(box[0][1]), float(box[0][0]))
+            except (IndexError, TypeError, ValueError):
+                return (0.0, 0.0)
 
-            # Robust sort: extract (y0, x0) from the first box corner.
-            def _key(item: tuple[int, str]) -> tuple[float, float]:
-                idx, _txt = item
-                if boxes is None or idx >= len(boxes):
-                    return (0.0, 0.0)
-                try:
-                    box = boxes[idx]
-                    # Each box is a list of 4 corner points. Take top-left.
-                    y0 = float(box[0][1])
-                    x0 = float(box[0][0])
-                    return (y0, x0)
-                except (IndexError, TypeError, ValueError):
-                    return (0.0, 0.0)
-
-            ordered = sorted(indexed, key=_key)
-            text = "\n".join(t for _, t in ordered)
-        else:
-            text = "\n".join(txts)
-        if scores is not None and len(scores) > 0:
+        ordered = sorted(lines, key=_key)
+        text = "\n".join(str(t) for _, t, _ in ordered)
+        scores = [s for _, _, s in lines if s is not None]
+        confidence: Optional[float] = None
+        if scores:
             try:
                 mean_score = sum(float(s) for s in scores) / len(scores)
                 # Normalise to [0, 1] if the engine returns 0-100.
                 if mean_score > 1.0:
                     mean_score = mean_score / 100.0
-                confidence: Optional[float] = mean_score
+                confidence = mean_score
             except (TypeError, ValueError):
                 confidence = None
-        else:
-            confidence = None
         return OCRResult(
             text=text,
             confidence=confidence,
@@ -146,7 +122,56 @@ class RapidOCRProvider(OCRProvider):
             engine="rapidocr",
         )
 
-    def _extract_sync(self, image_jpeg: bytes) -> Optional[tuple]:
-        """Call the engine synchronously. Returns the (boxes, txts, scores) tuple."""
+    def _extract_sync(self, image_jpeg: bytes) -> Any:
+        """Call the engine synchronously. Shape varies; see ``_normalize_result``."""
         engine = self._get_engine()
         return engine(image_jpeg)
+
+
+def _normalize_result(result: Any) -> list[tuple[Any, str, Any]]:
+    """Flatten whatever the engine returned into ``[(box, text, score), …]``.
+
+    ``rapidocr_onnxruntime`` has shipped two different return shapes and
+    the pin is ``>=1.4.0``, so both must be handled:
+
+    * 1.4.x returns ``(results, elapse_list)`` where ``results`` is
+      ``None`` (nothing detected) or a list of ``[box, text, score]``.
+    * Older builds return a parallel ``(boxes, txts, scores)`` triple.
+
+    Assuming the triple unconditionally is what made every keyframe come
+    back ``ocr_status='failed'`` on 1.4.4: the two-element unpack raised
+    ``ValueError`` before a single character was read.
+
+    Returns:
+        One entry per detected line, or an empty list when the image
+        held no text — which is a success, not a failure.
+    """
+    if not result:
+        return []
+    if len(result) == 2:
+        detections = result[0]
+        if not detections:
+            return []
+        lines: list[tuple[Any, str, Any]] = []
+        for item in detections:
+            try:
+                box, text, score = item[0], item[1], item[2]
+            except (IndexError, KeyError, TypeError):
+                continue
+            lines.append((box, text, score))
+        return lines
+    if len(result) == 3:
+        boxes, txts, scores = result[0], result[1], result[2]
+        if not txts:
+            return []
+        boxes = boxes or []
+        scores = scores or []
+        return [
+            (
+                boxes[i] if i < len(boxes) else None,
+                txts[i],
+                scores[i] if i < len(scores) else None,
+            )
+            for i in range(len(txts))
+        ]
+    return []

@@ -22,6 +22,7 @@ import logging
 import re
 from typing import Iterable
 
+from agentvoca import __version__
 from agentvoca.observer.compile.base import SessionCompiler, block_window, split_blocks
 from agentvoca.observer.models import CompiledSession, ObserverEvent, SessionBundle
 
@@ -162,7 +163,7 @@ def _render_empty_session(bundle: SessionBundle) -> CompiledSession:
     markdown = (
         f"{title}\n\n"
         "_No events were recorded in this session._\n\n---\n\n"
-        f"*Compiled by AgentVoca v0.4.0 \u00b7 rules compiler \u00b7 no LLM used*"
+        f"*Compiled by AgentVoca v{__version__} \u00b7 rules compiler \u00b7 no LLM used*"
     )
     return CompiledSession(
         markdown=markdown,
@@ -428,7 +429,7 @@ class RulesCompiler(SessionCompiler):
 
         markdown = (
             f"{header}\n\n{body}\n\n---\n\n"
-            f"*Compiled by AgentVoca v0.4.0 \u00b7 rules compiler \u00b7 no LLM used*"
+            f"*Compiled by AgentVoca v{__version__} \u00b7 rules compiler \u00b7 no LLM used*"
         )
 
         return CompiledSession(

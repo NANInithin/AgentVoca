@@ -147,6 +147,8 @@ class ObserverStore:
         self._writer: threading.Thread | None = None
         self._conn: sqlite3.Connection | None = None  # writer thread ONLY
         self._started = False
+        self._writer_ready = threading.Event()
+        self._writer_init_error: Exception | None = None
         # Per-session monotonicity clamp. Lives on the writer thread.
         self._last_ts_ms: dict[int, int] = {}
         # Guard for tests: stop() called without start() should not raise.
@@ -158,7 +160,7 @@ class ObserverStore:
         self._hardened = False
         # Read connections are short-lived per call. ``_ro_conn_uri`` is the
         # ``file:...?mode=ro`` URI sqlite3 opens read-only.
-        self._ro_conn_uri = f"file:{self._db_path}?mode=ro"
+        self._ro_conn_uri = f"file:{self._db_path.as_posix()}?mode=ro"
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -183,6 +185,8 @@ class ObserverStore:
             self._writer = threading.Thread(
                 target=self._writer_loop, name="observer-store-writer", daemon=True
             )
+            self._writer_ready.clear()
+            self._writer_init_error = None
             self._started = True
             self._writer.start()
         # Wait for the writer to finish initialisation. We do this by
@@ -190,7 +194,13 @@ class ObserverStore:
         # caller submits after start() is appended to the same queue, so
         # a single flush at the end of start() is enough to ensure the
         # schema has been applied.
-        self.flush(timeout=10.0)
+        if not self._writer_ready.wait(timeout=10.0) or self._writer_init_error is not None:
+            with self._lock:
+                self._started = False
+                self._writer = None
+            raise ObserverError(
+                f"Observer store failed to start: {self._writer_init_error or 'timeout'}"
+            )
 
     def stop(self, timeout: float = 5.0) -> None:
         """Drain the queue, close the connection, join the writer.
@@ -203,6 +213,8 @@ class ObserverStore:
             self._queue.put(None)  # shutdown sentinel
             assert self._writer is not None
             self._writer.join(timeout=timeout)
+            if self._writer.is_alive():
+                raise ObserverError("Observer store writer did not stop within timeout")
             self._started = False
             self._writer = None
             self._conn = None
@@ -222,6 +234,7 @@ class ObserverStore:
             for stmt in _DDL[3:]:  # PRAGMAs already issued above
                 self._conn.execute(stmt)
             self._ensure_schema_meta()
+            self._writer_ready.set()
 
             while True:
                 job = self._queue.get()
@@ -235,7 +248,11 @@ class ObserverStore:
                 # job that holds a barrier must not hang the caller.
                 if job.barrier is not None:
                     job.barrier.set()
+        except Exception as exc:
+            self._writer_init_error = exc
+            logger.exception("Observer store writer exited")
         finally:
+            self._writer_ready.set()
             if self._conn is not None:
                 try:
                     self._conn.close()
@@ -684,7 +701,7 @@ class ObserverStore:
             return None
         try:
             conn = sqlite3.connect(
-                self._db_path,
+                self._ro_conn_uri,
                 uri=True,
                 check_same_thread=True,
             )

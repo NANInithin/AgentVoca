@@ -16,13 +16,15 @@ from agentvoca.setup.pages.base import ConfigPage
 
 class HotkeysPage(ConfigPage):
     title = "Hotkeys"
-    subtitle = "Pick a preset for each action. Choose (disabled) to turn a hotkey off."
+    subtitle = "Pick a preset for each action. Optional hotkeys can be disabled."
 
     def _build(self) -> None:
         super()._build()
         layout = self._body_layout
 
-        self._rows: list[tuple[str, QtWidgets.QComboBox, QtWidgets.QLabel]] = []
+        self._rows: list[
+            tuple[str, QtWidgets.QComboBox, QtWidgets.QLineEdit, QtWidgets.QLabel]
+        ] = []
 
         for action in ALL_ACTIONS:
             row_layout = QtWidgets.QHBoxLayout()
@@ -35,11 +37,18 @@ class HotkeysPage(ConfigPage):
             combo.setMinimumWidth(220)
             combo.addItem("(custom — advanced)", CUSTOM)
             for label_text in labels_for_dropdown():
+                if action.required and label_text == "(disabled)":
+                    continue
                 combo.addItem(label_text)
             combo.currentIndexChanged.connect(
                 lambda _idx, field=action.config_field: self._on_combo_changed(field)
             )
             row_layout.addWidget(combo)
+
+            custom = QtWidgets.QLineEdit()
+            custom.setPlaceholderText("e.g. ctrl+shift+z")
+            custom.setVisible(False)
+            row_layout.addWidget(custom)
 
             hint = QtWidgets.QLabel("")
             hint.setStyleSheet("color: #b36400;")
@@ -47,45 +56,29 @@ class HotkeysPage(ConfigPage):
             row_layout.addWidget(hint, stretch=1)
 
             layout.addLayout(row_layout)
-            self._rows.append((action.config_field, combo, hint))
-
-        # Custom-hotkey textbox revealed when (custom) is selected
-        self._custom_box = QtWidgets.QPlainTextEdit()
-        self._custom_box.setPlaceholderText(
-            "Type free-form hotkeys in the schema format, one per line. Example: ctrl+shift+z"
-        )
-        self._custom_box.setMaximumHeight(80)
-        self._custom_box.setVisible(False)
-        layout.addWidget(self._custom_box)
+            self._rows.append((action.config_field, combo, custom, hint))
 
         layout.addStretch()
 
     def _on_combo_changed(self, field: str) -> None:
-        for f, combo, hint in self._rows:
+        for f, combo, custom, hint in self._rows:
             if f != field:
                 continue
             label = combo.currentText()
             value = value_for_label(label)
             if value == CUSTOM:
-                hint.setText("Type the combo in the box below.")
-                self._custom_box.setVisible(True)
+                hint.setText("Enter a valid combination.")
+                custom.setVisible(True)
             else:
                 preset = find_preset(value)
                 hint.setText(preset.warning if preset and preset.warning else "")
-                # Hide the custom box if no row is using CUSTOM.
-                self._custom_box.setVisible(self._any_custom())
-
-    def _any_custom(self) -> bool:
-        for _f, combo, _h in self._rows:
-            if value_for_label(combo.currentText()) == CUSTOM:
-                return True
-        return False
+                custom.setVisible(False)
 
     # ── Load / save ────────────────────────────────────────────────────
 
     def load_from_controller(self) -> None:
         c = self.controller.draft
-        for field, combo, _hint in self._rows:
+        for field, combo, custom, _hint in self._rows:
             section_name, key = field.split(".", 1)
             value = getattr(getattr(c, section_name), key)
             preset = find_preset(value)
@@ -96,21 +89,15 @@ class HotkeysPage(ConfigPage):
                     continue
             # Custom value — switch to the (custom) row
             combo.setCurrentIndex(combo.findData(CUSTOM))
-            self._custom_box.setPlainText(value or "")
-            self._custom_box.setVisible(True)
+            custom.setText(value or "")
+            custom.setVisible(True)
 
     def save_to_controller(self) -> None:
         updates: dict[str, dict[str, str | None]] = {}
-        for field, combo, _hint in self._rows:
+        for field, combo, custom, _hint in self._rows:
             section_name, key = field.split(".", 1)
             value = value_for_label(combo.currentText())
             if value == CUSTOM:
-                # Find the custom value — first non-empty line in the textbox.
-                lines = [
-                    line.strip()
-                    for line in self._custom_box.toPlainText().splitlines()
-                    if line.strip()
-                ]
-                value = lines[0] if lines else None
+                value = custom.text().strip() or None
             updates.setdefault(section_name, {})[key] = value
         self.controller.update_section(**updates)

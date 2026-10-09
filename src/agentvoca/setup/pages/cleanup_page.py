@@ -307,5 +307,7 @@ class CleanupPage(ConfigPage):
     @staticmethod
     def _set_combo(combo: QtWidgets.QComboBox, value: str) -> None:
         idx = combo.findData(value)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
+        if idx < 0:
+            combo.addItem(f"{value} (custom)", value)
+            idx = combo.count() - 1
+        combo.setCurrentIndex(idx)

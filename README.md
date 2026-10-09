@@ -30,6 +30,18 @@ result inserted directly at the cursor in the active application.
 
 ---
 
+## What's new in v0.4.1
+
+v0.4.1 is a reliability update for dictation, Observer, settings, and desktop insertion.
+It fixes the review findings around excluded-app capture, incomplete exports, ASR
+contention, insertion undo, configuration saves, and UI thread ownership. Clipboard
+paste now restores the original clipboard formats when they have not changed.
+
+See [the v0.4.1 release notes](docs/release_notes/RELEASE_NOTES-v0.4.1.md) for the
+full change summary and the remaining retention and desktop-verification limitations.
+
+---
+
 ## What's new in v0.4.0
 
 v0.4.0 ships **Observer mode** — a background session recorder

@@ -122,11 +122,13 @@ class ScreenGrabber:
         self._active_app = active_app
         self._queue: queue.Queue = queue.Queue(maxsize=queue_depth)
         self._thread: Optional[threading.Thread] = None
+        self._accepting = True
         self._dedup_threshold = config.dedup_phash_distance
         self._dedup_enabled = config.dedup_phash_distance > 0
         self._recent: deque[int] = deque(maxlen=8)
         self._deduped_count: int = 0
         self._dropped_count: int = 0
+        self._counter_lock = threading.Lock()
         self._clock = clock
         # ``rect_func`` is injectable so tests can stub the platform rect.
         # Default: Windows DWM extended bounds; macOS/Linux return None.
@@ -137,7 +139,13 @@ class ScreenGrabber:
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
+            if not self._accepting:
+                logger.warning("Screen grabber is still stopping; capture remains paused")
             return
+        if self._thread is not None:
+            self._queue = queue.Queue(maxsize=self._queue.maxsize)
+        self._recent.clear()
+        self._accepting = True
         self._thread = threading.Thread(target=self._worker, name="observer-capture", daemon=True)
         self._thread.start()
         logger.debug("ScreenGrabber started")
@@ -145,6 +153,7 @@ class ScreenGrabber:
     def stop(self, timeout: float = 2.0) -> None:
         if self._thread is None:
             return
+        self._accepting = False
         try:
             self._queue.put_nowait(None)  # shutdown sentinel
         except queue.Full:
@@ -155,6 +164,9 @@ class ScreenGrabber:
                     break
             self._queue.put(None)
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            logger.warning("Screen grabber did not stop before timeout")
+            return
         self._thread = None
         logger.debug("ScreenGrabber stopped")
 
@@ -165,20 +177,25 @@ class ScreenGrabber:
     ) -> bool:
         """Enqueue a capture request. Returns False if the queue is full."""
         item = (reason, on_grab)
+        if not self._accepting:
+            return False
         try:
             self._queue.put_nowait(item)
             return True
         except queue.Full:
-            self._dropped_count += 1
+            with self._counter_lock:
+                self._dropped_count += 1
             return False
 
     @property
     def deduped_count(self) -> int:
-        return self._deduped_count
+        with self._counter_lock:
+            return self._deduped_count
 
     @property
     def dropped_count(self) -> int:
-        return self._dropped_count
+        with self._counter_lock:
+            return self._dropped_count
 
     # ── Worker ─────────────────────────────────────────────────────
 
@@ -236,7 +253,8 @@ class ScreenGrabber:
             # dHash on the native image, BEFORE downscale.
             h = dhash(image) if self._dedup_enabled else 0
             if self._dedup_enabled and self._is_duplicate(h):
-                self._deduped_count += 1
+                with self._counter_lock:
+                    self._deduped_count += 1
                 return None
             # Downscale only if wider than max_width_px. Preserve aspect.
             if image.width > self._config.max_width_px:

@@ -135,4 +135,5 @@ def set_wizard_auto_open(enabled: bool) -> None:
 
 def config_exists() -> bool:
     """Return True if ``config.yaml`` is present at the canonical location."""
-    return config_path().is_file() or bool(os.environ.get("AGENTVOCA_CONFIG"))
+    override = os.environ.get("AGENTVOCA_CONFIG")
+    return Path(override).expanduser().is_file() if override else config_path().is_file()

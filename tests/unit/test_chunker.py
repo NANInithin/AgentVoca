@@ -59,6 +59,18 @@ class TestChunkerLifecycle:
     async def test_initial_state(self, chunker: AudioChunker) -> None:
         assert chunker.is_running is False
 
+    async def test_stalled_loop_buffer_is_bounded(self, event_bus: EventBus) -> None:
+        chunker = AudioChunker(event_bus=event_bus, max_buffer_bytes=16)
+        chunker.start()
+        chunker.add_audio(b"a" * 12)
+        chunker.add_audio(b"b" * 12)
+        assert chunker.overflowed is True
+        assert len(chunker._buffer) == 0
+        await chunker.stop(flush=False)
+        chunker.start()
+        assert chunker.overflowed is False
+        await chunker.stop(flush=False)
+
     async def test_start_sets_running(self, chunker: AudioChunker) -> None:
         chunker.start()
         assert chunker.is_running is True

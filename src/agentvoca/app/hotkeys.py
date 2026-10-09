@@ -60,6 +60,7 @@ _PYNPUT_MAP: dict[str, str] = {
     "f10": "<f10>",
     "f11": "<f11>",
     "f12": "<f12>",
+    **{f"f{number}": f"<f{number}>" for number in range(13, 25)},
 }
 
 
@@ -138,17 +139,19 @@ class HotkeyManager:
         #   - Dead-key combinations
 
         def on_press(key: keyboard.Key | keyboard.KeyCode | None) -> None:
-            if key is None or self._listener is None:
+            listener = self._listener
+            if key is None or listener is None:
                 return
-            canonical = self._listener.canonical(key)
-            for hk in self._hotkeys:
+            canonical = listener.canonical(key)
+            for hk in tuple(self._hotkeys):
                 hk.press(canonical)
 
         def on_release(key: keyboard.Key | keyboard.KeyCode | None) -> None:
-            if key is None or self._listener is None:
+            listener = self._listener
+            if key is None or listener is None:
                 return
-            canonical = self._listener.canonical(key)
-            for hk in self._hotkeys:
+            canonical = listener.canonical(key)
+            for hk in tuple(self._hotkeys):
                 hk.release(canonical)
 
         self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)

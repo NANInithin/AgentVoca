@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+import weakref
 
 from PySide6 import QtCore, QtWidgets
+from shiboken6 import isValid
 
 from agentvoca.setup.controllers.model_catalog import ModelCatalog
 from agentvoca.setup.pages._combobox_utils import resolve_editable_combo_id
@@ -69,6 +71,7 @@ class AsrPage(ConfigPage):
         # so the cache survives across navigation away and back.
         self._model_catalog = ModelCatalog()
         self._fetch_in_flight: bool = False
+        self._fetch_worker = None
         super().__init__(controller)
         self._fetch_result.connect(self._apply_fetch_result)
 
@@ -226,7 +229,8 @@ class AsrPage(ConfigPage):
         """Kick off an async model-list fetch for the current endpoint + key."""
         if self._fetch_in_flight:
             return
-        endpoint = self._endpoint.text().strip() or "https://api.openai.com/v1"
+        endpoint_input = self._endpoint.text().strip()
+        endpoint = endpoint_input or "https://api.openai.com/v1"
         env_var = self._api_key_env.text().strip()
         api_key = os.environ.get(env_var) if env_var else None
         if env_var and not api_key:
@@ -246,18 +250,31 @@ class AsrPage(ConfigPage):
         # instead of touching widgets directly — Qt queues the emission
         # onto this page's (GUI) thread so ``_apply_fetch_result`` runs
         # safely there.
+        page_ref = weakref.ref(self)
+
         def _on_done(entries, error) -> None:
-            self._fetch_result.emit(entries, error)
+            page = page_ref()
+            if page is not None and isValid(page):
+                if (
+                    page._endpoint.text().strip() != endpoint_input
+                    or page._api_key_env.text().strip() != env_var
+                ):
+                    entries, error = (
+                        None,
+                        "Endpoint or API key setting changed; fetch models again.",
+                    )
+                page._fetch_result.emit(entries, error)
 
         # This is the ASR (speech-to-text) picker, so ask OpenRouter for only
         # its transcription models — otherwise its ~300 chat models bury the
         # handful of Whisper models. Ignored by non-OpenRouter hosts.
-        self._model_catalog.fetch_async(
+        self._fetch_worker = self._model_catalog.fetch_async(
             endpoint, api_key, _on_done, output_modality="transcription"
         )
 
     def _apply_fetch_result(self, entries, error) -> None:
         self._fetch_in_flight = False
+        self._fetch_worker = None
         self._fetch_models_btn.setEnabled(True)
         self._fetch_models_btn.setText("Fetch models…")
         if error is not None:
@@ -353,6 +370,7 @@ class AsrPage(ConfigPage):
             asr = {
                 "provider": "faster_whisper",
                 "model": self._local_model.currentData(),
+                "language_hint": self._language_hint.text().strip() or None,
                 "warm_up": self._warm_up.isChecked(),
                 "streaming": self._streaming.isChecked(),
                 "streaming_model": self._streaming_model.currentData(),
@@ -366,5 +384,7 @@ class AsrPage(ConfigPage):
     @staticmethod
     def _set_combo(combo: QtWidgets.QComboBox, value: str) -> None:
         idx = combo.findData(value)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
+        if idx < 0:
+            combo.addItem(value, value)
+            idx = combo.findData(value)
+        combo.setCurrentIndex(idx)

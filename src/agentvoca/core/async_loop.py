@@ -33,6 +33,8 @@ class AsyncLoopThread:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run, name="agentvoca-asyncio", daemon=True)
         self._started = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._stop_requested = False
 
     def _run(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -77,7 +79,13 @@ class AsyncLoopThread:
 
     def stop(self) -> None:
         """Stop the loop and join the thread."""
+        with self._stop_lock:
+            if self._thread.is_alive() and not self._stop_requested:
+                self._stop_requested = True
+                self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread.is_alive():
-            self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join(timeout=3.0)
-        logger.debug("Async loop thread stopped")
+        if self._thread.is_alive():
+            logger.warning("Async loop thread is still draining after stop timeout")
+        else:
+            logger.debug("Async loop thread stopped")

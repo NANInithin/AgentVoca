@@ -33,6 +33,10 @@ class TestSnippetExpander:
         result = expander.expand("HELLO PPL")
         assert result == "HELLO people"
 
+    def test_uppercase_configured_trigger(self):
+        expander = SnippetExpander(snippets={"BRB": "be right back"})
+        assert expander.expand("BRB") == "be right back"
+
     def test_multiple_snippets(self):
         """Multiple snippets are all expanded."""
         expander = SnippetExpander(

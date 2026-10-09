@@ -98,7 +98,7 @@ class ActiveAppDetector:
         # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = kernel32.OpenProcess(0x1000, False, pid.value)
         if not handle:
-            return window_title, None
+            return None, window_title
 
         try:
             exe_buf = ctypes.create_unicode_buffer(260)

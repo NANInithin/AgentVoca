@@ -74,4 +74,4 @@
 
 ---
 
-*Compiled by AgentVoca v0.4.0 · rules compiler · no LLM used*
+*Compiled by AgentVoca v0.4.1 · rules compiler · no LLM used*

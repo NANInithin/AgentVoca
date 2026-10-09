@@ -9,7 +9,7 @@ the subsystems.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from agentvoca.observer.models import (
     EventKind,
@@ -47,6 +47,11 @@ class SessionManager:
         self._current: Optional[ObserverSession] = None
         self._is_paused: bool = False
         self._pause_reason: str = ""
+        self._privacy_gate: Callable[[], bool] | None = None
+
+    def set_privacy_gate(self, is_excluded: Callable[[], bool]) -> None:
+        """Drop sensitive writes while the foreground is excluded."""
+        self._privacy_gate = is_excluded
 
     @property
     def current(self) -> Optional[ObserverSession]:
@@ -134,6 +139,13 @@ class SessionManager:
         """
         if self._current is None:
             return None
+        if kind not in {"pause_start", "pause_end"} and self._privacy_gate is not None:
+            try:
+                if self._privacy_gate():
+                    return None
+            except Exception:
+                logger.exception("Observer privacy check failed; dropping event")
+                return None
         if self._is_paused and kind not in _ALWAYS_WRITE_KINDS:
             return None
         if ts_ms is None:

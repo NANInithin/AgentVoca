@@ -202,7 +202,7 @@ async def test_one_shot_failure_does_not_block_others():
     assert vision.texts == ["shot-0", "shot-2"]
     assert had_vision is True
     # The splicer received them in input order.
-    assert splicer.extractions == ["shot-0", "shot-2"]
+    assert splicer.extractions == ["shot-0", None, "shot-2"]
 
 
 @pytest.mark.asyncio
@@ -259,8 +259,9 @@ class _PassThroughSplicer:
     ``_apply_vision`` hands the splicer."""
 
     def __init__(self) -> None:
-        self.extractions: list[str] = []
+        self.extractions: list[str | None] = []
 
-    def splice(self, text: str, extractions: list[str]) -> tuple[str, int]:
+    def splice(self, text: str, extractions: list[str | None]) -> tuple[str, int]:
         self.extractions = list(extractions)
-        return text + " " + " ".join(extractions), len(extractions)
+        successful = [item for item in extractions if item]
+        return text + " " + " ".join(successful), len(successful)

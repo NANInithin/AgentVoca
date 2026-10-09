@@ -130,7 +130,8 @@ class TriggerGate:
             try:
                 self._enqueue(reason)
             except queue.Full:
-                self._dropped += 1
+                with self._lock:
+                    self._dropped += 1
                 if self._on_gap is not None:
                     try:
                         self._on_gap("capture_queue_full", 1)
@@ -139,13 +140,19 @@ class TriggerGate:
                 return False
         return True
 
+    def is_excluded(self) -> bool:
+        """Refresh exclusion state independently of capture triggers."""
+        return self._is_excluded()
+
     @property
     def accepted(self) -> int:
-        return self._accepted
+        with self._lock:
+            return self._accepted
 
     @property
     def dropped(self) -> int:
-        return self._dropped
+        with self._lock:
+            return self._dropped
 
     @property
     def tokens(self) -> float:
@@ -200,6 +207,7 @@ class TriggerEngine:
         self._mouse_lock = threading.Lock()
         self._last_scroll_monotonic: float = -1e18
         self._last_app: tuple[Optional[str], Optional[str]] = (None, None)
+        self._last_app_excluded = False
         self._click_down_pos: Optional[tuple[int, int]] = None
         # Per-source enable flag is read by each source; flipped in the
         # spec by ``observer.triggers.*``. Default to True.
@@ -332,24 +340,27 @@ class TriggerEngine:
 
     def _poll_once(self) -> None:
         # 1) Window / title change.
+        excluded = self._gate.is_excluded()
         if self._window_change_enabled:
             try:
                 app, title = self._active_app.detect()
             except Exception:
                 logger.debug("active-app detect failed", exc_info=True)
                 app, title = None, None
-            if (app, title) != self._last_app:
-                previous_app = self._last_app[0]
+            if (app, title) != (None, None) and (app, title) != self._last_app:
+                previous_app = None if self._last_app_excluded else self._last_app[0]
                 self._last_app = (app, title)
+                self._last_app_excluded = excluded
                 # Always record the focus_change event. The store's
                 # per-session monotonicity check will timestamp it.
-                self._session.record(
-                    "focus_change",
-                    app_name=app,
-                    window_title=title,
-                    meta={"previous_app": previous_app} if previous_app else {},
-                )
-                self._gate.request("window_change")
+                if not excluded:
+                    self._session.record(
+                        "focus_change",
+                        app_name=app,
+                        window_title=title,
+                        meta={"previous_app": previous_app} if previous_app else {},
+                    )
+                    self._gate.request("window_change")
         # 2) Scroll settle.
         if self._scroll_settle_enabled:
             with self._mouse_lock:
@@ -360,4 +371,5 @@ class TriggerEngine:
                     self._gate.request("scroll_settle")
                     with self._mouse_lock:
                         # Reset so we do not fire again until the next scroll.
-                        self._last_scroll_monotonic = -1e18
+                        if self._last_scroll_monotonic == last:
+                            self._last_scroll_monotonic = -1e18

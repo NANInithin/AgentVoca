@@ -42,6 +42,6 @@ def paste_modifier_key() -> str:
     """Return the paste modifier key for macOS.
 
     Returns:
-        ``"cmd"`` for macOS.
+        ``"command"`` for macOS.
     """
-    return "cmd"
+    return "command"

@@ -145,7 +145,7 @@ class FasterWhisperProvider(ASRProvider):
         logger.info("Warming up FasterWhisperProvider…")
         t0 = time.perf_counter()
 
-        model = self._get_model()
+        model = await asyncio.to_thread(self._get_model)
 
         # Inference probe — 300 ms of silence is enough to trigger cublas.
         loop = asyncio.get_running_loop()
@@ -168,7 +168,7 @@ class FasterWhisperProvider(ASRProvider):
             self._device = "cpu"
             self._compute_type = "int8"
             self._streaming_model = None
-            _ = self._get_model()
+            _ = await asyncio.to_thread(self._get_model)
         except Exception as exc:
             err = str(exc).lower()
             if any(kw in err for kw in ("cuda", "cublas", "cudnn", "cublaslt")):
@@ -177,13 +177,13 @@ class FasterWhisperProvider(ASRProvider):
                 self._device = "cpu"
                 self._compute_type = "int8"
                 self._streaming_model = None
-                _ = self._get_model()
+                _ = await asyncio.to_thread(self._get_model)
             else:
                 logger.debug("Inference probe non-CUDA error (ignored): %s", exc)
 
         # Preload the streaming model (uses whichever device survived the probe)
         if self._config.streaming:
-            _ = self._get_streaming_model()
+            _ = await asyncio.to_thread(self._get_streaming_model)
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         self._warmed_up = True
@@ -309,11 +309,9 @@ class FasterWhisperProvider(ASRProvider):
         if not audio_bytes:
             return TranscriptSegment(text="", is_final=True)
 
-        model = self._get_model()
-
-        audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
-
         try:
+            model = await asyncio.to_thread(self._get_model)
+            audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
             loop = asyncio.get_running_loop()
             segments, info = await loop.run_in_executor(
                 None,
@@ -343,6 +341,7 @@ class FasterWhisperProvider(ASRProvider):
                     e,
                 )
                 self._model = None
+                self._streaming_model = None
                 self._device = "cpu"
                 self._compute_type = "int8"
             raise ASRError(f"Faster-Whisper transcription failed: {e}")
@@ -403,7 +402,7 @@ class FasterWhisperProvider(ASRProvider):
         full_buffer = bytearray()
         window_s = self._config.streaming_window_s
 
-        streaming_model = self._get_streaming_model()
+        streaming_model = await asyncio.to_thread(self._get_streaming_model)
 
         loop = asyncio.get_running_loop()
         partial_index = 0
@@ -490,7 +489,7 @@ class FasterWhisperProvider(ASRProvider):
 
             for _attempt in range(2):
                 try:
-                    accurate_model = self._get_model()  # re-fetch in case reset
+                    accurate_model = await asyncio.to_thread(self._get_model)
                     segments, info = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
@@ -517,6 +516,7 @@ class FasterWhisperProvider(ASRProvider):
                     if _attempt == 0:
                         logger.warning("Streaming final pass timed out — reloading model on CPU.")
                         self._model = None
+                        self._streaming_model = None
                         self._device = "cpu"
                         self._compute_type = "int8"
                         continue
@@ -531,6 +531,7 @@ class FasterWhisperProvider(ASRProvider):
                             e,
                         )
                         self._model = None
+                        self._streaming_model = None
                         self._device = "cpu"
                         self._compute_type = "int8"
                         continue

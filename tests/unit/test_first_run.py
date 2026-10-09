@@ -87,5 +87,8 @@ def test_config_exists_detects_file(isolated_home):
 
 
 def test_config_exists_detects_env_override(isolated_home, monkeypatch):
-    monkeypatch.setenv("AGENTVOCA_CONFIG", "/some/other/path.yaml")
+    override = isolated_home / "other.yaml"
+    monkeypatch.setenv("AGENTVOCA_CONFIG", str(override))
+    assert config_exists() is False
+    override.write_text("asr:\n  provider: faster_whisper\n", encoding="utf-8")
     assert config_exists() is True

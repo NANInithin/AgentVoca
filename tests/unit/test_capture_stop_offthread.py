@@ -132,6 +132,29 @@ class TestDoubleStopIsNoop:
         assert len(captured) == 1, f"Second stop() should be a no-op, got {len(captured)} events"
 
 
+def test_stop_snapshot_survives_immediate_new_recording() -> None:
+    class DeferredLoop:
+        def __init__(self):
+            self.calls = []
+
+        def call_soon_threadsafe(self, callback, *args):
+            self.calls.append((callback, args))
+
+    bus = EventBus()
+    events = []
+    bus.subscribe(RecordingStoppedEvent, events.append)
+    loop = DeferredLoop()
+    capture = AudioCapture(event_bus=bus, loop=loop)
+    capture.start_recording()
+    capture._audio_buffer.append(b"first")
+    capture.stop_recording()
+    capture.start_recording()
+    capture._audio_buffer.append(b"second")
+    for callback, args in loop.calls:
+        callback(*args)
+    assert [event.audio_bytes for event in events] == [b"first"]
+
+
 class TestAutoStopFromCallbackDoesNotBlockOnJoin:
     """The audio callback no longer executes the buffer join inline."""
 

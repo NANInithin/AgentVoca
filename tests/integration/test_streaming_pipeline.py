@@ -214,6 +214,32 @@ class EventCollector:
 class TestStreamingPipeline:
     """Tests for the streaming pipeline path."""
 
+    async def test_stream_overflow_uses_complete_audio_for_final_transcript(
+        self,
+        streaming_config: FullConfig,
+        streaming_registry: ProviderRegistry,
+        event_bus: EventBus,
+    ) -> None:
+        orch = Orchestrator(
+            config=streaming_config, registry=streaming_registry, event_bus=event_bus
+        )
+        await orch.start()
+        transcripts = EventCollector(event_bus, TranscriptEvent)
+        event_bus.publish(
+            AudioChunkEvent(data=b"", sample_rate=16000, timestamp_ms=0, is_flush=True)
+        )
+        event_bus.publish(
+            RecordingStoppedEvent(
+                audio_bytes=b"\x00" * 64000,
+                duration_ms=1000,
+                sample_rate=16000,
+                stream_overflowed=True,
+            )
+        )
+        await asyncio.sleep(0.5)
+        assert transcripts.events[-1].text == "batch fallback transcript"
+        await orch.stop()
+
     async def test_streaming_provider_supports_streaming(
         self, streaming_config: FullConfig, streaming_registry: ProviderRegistry
     ) -> None:

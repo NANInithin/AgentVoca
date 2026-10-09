@@ -17,11 +17,8 @@ FILLER_WORDS = [
     r"\bumm?\b",
     r"\bahm?\b",
     r"\berm?\b",
-    r"\blike\b",
     r"\byou know\b",
     r"\bi mean\b",
-    r"\bactually\b",
-    r"\bbasically\b",
 ]
 
 # Regex patterns for technical tokens
@@ -76,6 +73,15 @@ class RulesCleanupProvider(CleanupProvider):
         if not transcript.strip():
             return transcript
 
+        style = context.style if context else "standard"
+        if style == "raw":
+            return transcript
+        preserve_code = (context.preserve_code if context else False) or bool(
+            self._config and self._config.preserve_code
+        )
+        if preserve_code and ("\n" in transcript or self._detect_tech_tokens(transcript)):
+            return transcript
+
         # In this rules-based provider, "preserving" means we are careful
         # with our regexes not to mangle them. The "passthrough marker"
         # mentioned in the spec is primarily for when this logic is used
@@ -84,15 +90,23 @@ class RulesCleanupProvider(CleanupProvider):
         text = transcript
 
         # 2. Filler removal (if not in raw mode or if standard/technical)
-        style = context.style if context else "standard"
         if style in ("standard", "technical", "professional"):
             # Remove fillers but preserve spaces
-            text = self._filler_re.sub("", text)
+            protected = [
+                match.span()
+                for pattern in self._tech_res.values()
+                for match in pattern.finditer(text)
+            ]
+            text = self._filler_re.sub(
+                lambda match: (
+                    match.group()
+                    if any(start < match.end() and match.start() < end for start, end in protected)
+                    else ""
+                ),
+                text,
+            )
             # Clean up extra spaces
-            text = re.sub(r"\s+", " ", text).strip()
-
-        if style == "raw":
-            return transcript
+            text = re.sub(r"[ \t]+", " ", text).strip()
 
         # 3. Basic Capitalization
         # Capitalize first letter of the whole text

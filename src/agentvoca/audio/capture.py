@@ -79,6 +79,7 @@ class AudioCapture:
 
         self._stream: Optional[sd.InputStream] = None
         self._recording = False
+        self._record_lock = threading.Lock()
         self._stop_requested = False
         self._audio_buffer: list[bytes] = []
         self._record_start_time: float = 0.0
@@ -97,7 +98,10 @@ class AudioCapture:
         # Optimistic default so we never trigger auto-stop before the
         # worker has produced its first result.
         self._last_vad_speech: bool = True
+        self._last_vad_result: tuple[bool, int] = (True, 0)
         self._vad_thread: Optional[threading.Thread] = None
+        self._orphan_vad_thread: Optional[threading.Thread] = None
+        self._vad_generation = 0
 
         # ── v0.4.0 Observer: ambient tap (OBS-10) ────────────────────
         # Runs before the ``_recording`` early-return so Observer hears
@@ -139,11 +143,20 @@ class AudioCapture:
 
             # R2: spawn the VAD worker thread alongside the audio stream.
             # Inference runs here, not on the audio callback.
-            if self._vad is not None:
+            self._vad_generation += 1
+            if self._vad is not None and not (
+                self._orphan_vad_thread is not None and self._orphan_vad_thread.is_alive()
+            ):
+                self._vad_queue = queue.Queue(maxsize=64)
                 self._vad_thread = threading.Thread(
-                    target=self._vad_worker, name="agentvoca-vad", daemon=True
+                    target=self._vad_worker,
+                    args=(self._vad_queue, self._vad_generation),
+                    name="agentvoca-vad",
+                    daemon=True,
                 )
                 self._vad_thread.start()
+            elif self._vad is not None:
+                logger.warning("VAD remains unavailable while the prior worker is stalled")
 
             logger.info("Audio input stream started")
         except Exception as exc:
@@ -160,8 +173,15 @@ class AudioCapture:
         if self._vad_thread is not None:
             # Sentinel None terminates the worker's ``while True`` loop after
             # any items already in the queue are drained (FIFO order).
-            self._vad_queue.put(None)
+            try:
+                self._vad_queue.put_nowait(None)
+            except queue.Full:
+                self._vad_queue.get_nowait()
+                self._vad_queue.put_nowait(None)
             self._vad_thread.join(timeout=2.0)
+            if self._vad_thread.is_alive():
+                logger.warning("VAD worker did not stop before timeout")
+                self._orphan_vad_thread = self._vad_thread
             self._vad_thread = None
 
     def set_ambient_sink(self, sink: "AmbientSink | None") -> None:
@@ -176,11 +196,12 @@ class AudioCapture:
 
     def start_recording(self) -> None:
         """Begin capturing audio into the internal buffer."""
-        self._audio_buffer = []
-        self._recording = True
-        self._stop_requested = False
-        self._record_start_time = time.time()
-        self._last_speech_time = time.time()
+        with self._record_lock:
+            self._audio_buffer = []
+            self._recording = True
+            self._stop_requested = False
+            self._record_start_time = time.time()
+            self._last_speech_time = time.time()
 
         # R2: drain any stale items the VAD worker hasn't consumed yet
         # from a prior recording, and reset the cached bool to optimistic.
@@ -189,6 +210,7 @@ class AudioCapture:
         # queue depth and self-corrects as soon as the callback feeds the
         # first chunk of the new dictation (~64 ms later).
         self._last_vad_speech = True
+        self._last_vad_result = (True, 0)
         while not self._vad_queue.empty():
             try:
                 self._vad_queue.get_nowait()
@@ -209,34 +231,55 @@ class AudioCapture:
         The heavy ``b"".join(self._audio_buffer)`` runs on the loop thread
         instead of the audio callback (R3).
         """
-        if not self._recording:
-            return
-        self._recording = False
-        self._stop_requested = True
+        with self._record_lock:
+            if not self._recording:
+                return
+            self._recording = False
+            self._stop_requested = True
+            stopped_buffer = self._audio_buffer
+            self._audio_buffer = []
+            duration_ms = int((time.time() - self._record_start_time) * 1000)
+            stream_overflowed = self._chunker.overflowed if self._chunker else False
 
-        # v2: flush + stop the streaming chunker (emits the final flush chunk).
-        if self._chunker is not None and self._loop is not None:
-            asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=True), self._loop)
-
-        duration_ms = int((time.time() - self._record_start_time) * 1000)
         if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._finalize_stop, duration_ms)
+            if self._chunker is not None:
+                asyncio.run_coroutine_threadsafe(
+                    self._finalize_after_flush(duration_ms, stopped_buffer, stream_overflowed),
+                    self._loop,
+                )
+            else:
+                self._loop.call_soon_threadsafe(
+                    self._finalize_stop, duration_ms, stopped_buffer, stream_overflowed
+                )
         else:
-            self._finalize_stop(duration_ms)
+            self._finalize_stop(duration_ms, stopped_buffer, stream_overflowed)
 
-    def _finalize_stop(self, duration_ms: int) -> None:
+    async def _finalize_after_flush(
+        self, duration_ms: int, stopped_buffer: list[bytes], stream_overflowed: bool
+    ) -> None:
+        """Publish stop only after the final streaming audio chunk is sent."""
+        try:
+            await self._chunker.stop(flush=True)
+        finally:
+            self._finalize_stop(duration_ms, stopped_buffer, stream_overflowed)
+
+    def _finalize_stop(
+        self, duration_ms: int, stopped_buffer: list[bytes], stream_overflowed: bool = False
+    ) -> None:
         """Join the buffer and publish ``RecordingStoppedEvent`` (loop thread).
 
-        Runs after the chunker-flush coroutine has been enqueued on the same
-        loop, so the AudioChunkEvent(is_flush=True) is processed before this
-        publish — same ordering as the previous inline implementation.
+        When streaming is active, the caller awaits the flush before this
+        method publishes the stop event.
         """
-        audio_bytes = b"".join(self._audio_buffer) if self._audio_buffer else b""
+        audio_bytes = b"".join(stopped_buffer)
+        if stream_overflowed:
+            logger.warning("Streaming buffer limit reached; using complete audio for final ASR")
         self._event_bus.publish(
             RecordingStoppedEvent(
                 audio_bytes=audio_bytes,
                 duration_ms=duration_ms,
                 sample_rate=self._sample_rate,
+                stream_overflowed=stream_overflowed,
             )
         )
         logger.debug("Recording stopped (%d ms, %d bytes)", duration_ms, len(audio_bytes))
@@ -250,10 +293,11 @@ class AudioCapture:
         ``cancel()`` does the real work of tearing down the in-flight
         pipeline task and resetting streaming state.
         """
-        was_recording = self._recording
-        self._recording = False
-        self._stop_requested = True
-        self._audio_buffer = []
+        with self._record_lock:
+            was_recording = self._recording
+            self._recording = False
+            self._stop_requested = True
+            self._audio_buffer = []
         if was_recording and self._chunker is not None and self._loop is not None:
             asyncio.run_coroutine_threadsafe(self._chunker.stop(flush=False), self._loop)
         logger.debug("Recording cancelled (was_recording=%s)", was_recording)
@@ -292,10 +336,10 @@ class AudioCapture:
                 # the cheapest possible protection on this hot path.
                 logger.debug("Ambient sink raised; continuing", exc_info=True)
 
-        if not self._recording:
-            return
-
-        self._audio_buffer.append(audio_bytes)
+        with self._record_lock:
+            if not self._recording:
+                return
+            self._audio_buffer.append(audio_bytes)
 
         # Feed audio to chunker for streaming ASR (v2)
         if self._chunker is not None and self._chunker.is_running:
@@ -310,7 +354,8 @@ class AudioCapture:
                 self._vad_queue.put_nowait((audio_bytes, timestamp_ms))
             except queue.Full:
                 pass  # worker is behind; skipping a block is harmless
-            if self._last_vad_speech:
+            vad_speech, vad_ts_ms = self._last_vad_result
+            if timestamp_ms - vad_ts_ms > 500 or vad_speech:
                 self._last_speech_time = time.time()
             else:
                 silence_ms = int((time.time() - self._last_speech_time) * 1000)
@@ -325,7 +370,9 @@ class AudioCapture:
 
     # ── VAD worker thread (R2) ─────────────────────────────────────────────
 
-    def _vad_worker(self) -> None:
+    def _vad_worker(
+        self, work_queue: "queue.Queue[tuple[bytes, int] | None]", generation: int
+    ) -> None:
         """Dedicated daemon thread: silero inference + speech-state cache update.
 
         Exits when the audio stream closes (None sentinel from ``stop()``).
@@ -334,7 +381,7 @@ class AudioCapture:
         terminate the loop and silently disable auto-stop.
         """
         while True:
-            item = self._vad_queue.get()
+            item = work_queue.get()
             if item is None:
                 return
             audio_bytes, timestamp_ms = item
@@ -345,8 +392,14 @@ class AudioCapture:
                 # VADSpeechEvent on a transition (from this worker thread,
                 # which is the same cross-thread publication pattern the
                 # audio callback used previously — EventBus handles it).
-                self._last_vad_speech = self._vad.process_chunk(audio_bytes, timestamp_ms)
+                speech = self._vad.process_chunk(audio_bytes, timestamp_ms)
+                if generation != self._vad_generation:
+                    continue
+                self._last_vad_speech = speech
+                self._last_vad_result = (speech, timestamp_ms)
             except Exception:
                 logger.debug("VAD worker inference failed", exc_info=True)
                 # Fail open, same fallback behaviour VAD.is_speech uses.
-                self._last_vad_speech = True
+                if generation == self._vad_generation:
+                    self._last_vad_speech = True
+                    self._last_vad_result = (True, timestamp_ms)

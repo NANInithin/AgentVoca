@@ -78,3 +78,17 @@ def test_window_banner_hidden_for_hot_only_changes(qapp, tmp_path: Path):
     window._refresh()  # type: ignore[attr-defined]
     assert not window._banner.isVisible()  # type: ignore[attr-defined]
     window.deleteLater()
+
+
+def test_widget_edit_enables_save_and_persists(qapp, tmp_path: Path, monkeypatch):
+    from PySide6 import QtWidgets
+
+    path = tmp_path / "config.yaml"
+    window = SettingsWindow(load_controller(path))
+    assert not window._save_btn.isEnabled()
+    window._tabs.widget(1)._language.setText("fr")
+    assert window._save_btn.isEnabled()
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args: None)
+    window._save_btn.click()
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["app"]["language"] == "fr"
+    window.deleteLater()

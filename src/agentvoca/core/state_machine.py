@@ -238,6 +238,7 @@ class StateMachine:
 
         new_state = best.to_state if best.to_state is not None else self._state
         side_effects = _side_effects_for(self._state, new_state, best_condition)
+        transitioned = new_state != self._state or bool(side_effects)
 
         # Mutate internal state
         self._state = new_state
@@ -245,7 +246,7 @@ class StateMachine:
         return TransitionResult(
             new_state=new_state,
             side_effects=side_effects,
-            transitioned=(new_state != self._state or side_effects != []),
+            transitioned=transitioned,
         )
 
     # ── Condition evaluators ─────────────────────────────────────────

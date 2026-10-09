@@ -22,6 +22,14 @@ from agentvoca.vision.prompts import get_vision_prompt
 
 logger = logging.getLogger(__name__)
 
+_REQUEST_EXTRA_KEYS = {
+    "max_tokens",
+    "top_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "seed",
+}
+
 
 class OpenAICompatibleVisionProvider(VisionProvider):
     """Vision provider using an OpenAI-compatible chat-completions API."""
@@ -33,7 +41,7 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             config: The vision configuration block.
         """
         self._config = config
-        self._endpoint = config.endpoint or "https://api.openai.com/v1"
+        self._endpoint = config.endpoint
         self._model = config.model or "gpt-4o-mini"
 
         self._api_key = None
@@ -117,6 +125,8 @@ class OpenAICompatibleVisionProvider(VisionProvider):
         """
         if not image_data:
             raise VisionError("No image data to extract.")
+        if not self.is_available():
+            raise VisionError("Vision endpoint or API key is not configured.")
 
         output_format = self._config.output_format
         if context is not None and context.output_format != "auto":
@@ -146,8 +156,13 @@ class OpenAICompatibleVisionProvider(VisionProvider):
             "temperature": 0.1,
         }
 
-        if self._config.extra:
-            payload.update(self._config.extra)
+        for key in _REQUEST_EXTRA_KEYS:
+            if key in self._config.extra:
+                payload[key] = self._config.extra[key]
+        # Temperature is an explicit request option, but the system's
+        # low-variance default remains protected from unrelated extras.
+        if "temperature" in self._config.extra:
+            payload["temperature"] = self._config.extra["temperature"]
 
         try:
             url = f"{self._endpoint.rstrip('/')}/chat/completions"

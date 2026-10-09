@@ -56,7 +56,7 @@ class AnchorSplicer:
             return []
         return list(self._regex.finditer(transcript))
 
-    def splice(self, transcript: str, extractions: list[str]) -> tuple[str, int]:
+    def splice(self, transcript: str, extractions: list[str | None]) -> tuple[str, int]:
         """Splice extractions into the transcript.
 
         Args:
@@ -67,26 +67,28 @@ class AnchorSplicer:
             A tuple ``(spliced_text, anchors_matched)`` where ``anchors_matched``
             is the number of anchor phrases that consumed an extraction.
         """
-        extractions = [e for e in extractions if e and e.strip()]
-        if not extractions:
+        if not any(e and e.strip() for e in extractions):
             return transcript, 0
 
         matches = self.find_anchors(transcript)
         n_paired = min(len(matches), len(extractions))
 
-        # Replace paired anchors right-to-left so earlier match offsets stay valid.
+        # Keep failed captures as placeholders so later captures retain their
+        # corresponding anchor index.
         result = transcript
+        anchors_matched = 0
         for i in range(n_paired - 1, -1, -1):
+            if not extractions[i] or not extractions[i].strip():
+                continue
             m = matches[i]
             block = f"\n\n{extractions[i].strip()}\n\n"
             result = result[: m.start()] + block + result[m.end() :]
+            anchors_matched += 1
 
         # Any extraction beyond the available anchors is appended in order.
-        leftover = extractions[n_paired:]
+        leftover = [e for e in extractions[n_paired:] if e and e.strip()]
         if leftover:
             tail = "\n\n".join(e.strip() for e in leftover)
             result = result.rstrip() + "\n\n" + tail
 
-        # Collapse the 3+ newlines a mid-sentence splice can create.
-        result = re.sub(r"\n{3,}", "\n\n", result).strip()
-        return result, n_paired
+        return result.strip(), anchors_matched

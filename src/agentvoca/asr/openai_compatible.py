@@ -19,6 +19,10 @@ from agentvoca.utils.errors import ASRError
 
 logger = logging.getLogger(__name__)
 
+# ``extra`` is shared with the local faster-whisper adapter. Only known
+# transcription request options belong in a multipart API request.
+_REQUEST_EXTRA_KEYS = {"temperature", "chunking_strategy"}
+
 
 def _pcm_f32_to_wav(audio_bytes: bytes, sample_rate: int, channels: int = 1) -> bytes:
     """Wrap raw little-endian float32 PCM in a standard 16-bit PCM WAV container.
@@ -123,8 +127,9 @@ class OpenAICompatibleASRProvider(ASRProvider):
             data["prompt"] = prompt
 
         # Add any extra parameters from config
-        if self._config.extra:
-            data.update(self._config.extra)
+        for key in _REQUEST_EXTRA_KEYS:
+            if key in self._config.extra:
+                data[key] = self._config.extra[key]
 
         url = f"{self._endpoint.rstrip('/')}/audio/transcriptions"
         try:

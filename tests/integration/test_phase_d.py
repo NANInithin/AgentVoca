@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,24 @@ from agentvoca.core.events import (
 )
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
+
+
+def test_adaptive_learns_changed_term_after_cleanup(mock_config):
+    orchestrator = Orchestrator(mock_config, ProviderRegistry(), EventBus())
+    adaptive = MagicMock()
+    adaptive.record_correction.return_value = False
+    orchestrator._adaptive_store = adaptive
+    orchestrator._potential_wrong_term = "I like apples"
+    orchestrator._undo_timestamp = time.perf_counter()
+
+    orchestrator._check_for_correction("I love apples")
+    adaptive.record_correction.assert_called_once_with("like", "love")
+
+    adaptive.reset_mock()
+    orchestrator._potential_wrong_term = "The first draft is complete"
+    orchestrator._undo_timestamp = time.perf_counter()
+    orchestrator._check_for_correction("A completely different sentence appears")
+    adaptive.record_correction.assert_not_called()
 
 
 @pytest.fixture

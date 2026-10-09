@@ -7,6 +7,7 @@ so a crash mid-write cannot leave a truncated artifact.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -34,6 +35,9 @@ class MarkdownExporter:
         Returns:
             The absolute path the markdown landed at.
         """
+        return await asyncio.to_thread(self._export_sync, compiled)
+
+    def _export_sync(self, compiled: CompiledSession) -> str:
         target = self._path()
         atomic_write_text(target, compiled.markdown)
         logger.debug("MarkdownExporter wrote %s (%d bytes)", target, len(compiled.markdown))

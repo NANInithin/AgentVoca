@@ -50,12 +50,15 @@ class AudioChunker:
         chunk_ms: int = 500,
         window_s: int = 8,
         sample_rate: int = 16000,
+        max_buffer_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         self._event_bus = event_bus
         self._chunk_ms = max(100, min(2000, chunk_ms))
         self._window_s = max(0, window_s)
         self._sample_rate = sample_rate
+        self._max_buffer_bytes = max_buffer_bytes
         self._buffer = bytearray()
+        self._overflowed = False
         self._last_emit_pos: int = 0  # bytes emitted so far (for delta)
         self._running = False
         self._task: Optional[asyncio.Task[None]] = None
@@ -66,9 +69,15 @@ class AudioChunker:
         """True if the chunker is actively emitting chunks."""
         return self._running
 
+    @property
+    def overflowed(self) -> bool:
+        """Whether the streaming buffer exceeded its safe memory budget."""
+        return self._overflowed
+
     def start(self) -> None:
         """Begin the chunk emission loop."""
         self._buffer.clear()
+        self._overflowed = False
         self._last_emit_pos = 0
         self._running = True
         self._start_time_ms = int(time.time() * 1000)
@@ -86,6 +95,12 @@ class AudioChunker:
             data: Raw PCM float32 audio bytes.
         """
         if not self._running:
+            return
+        if self._overflowed:
+            return
+        if len(self._buffer) + len(data) > self._max_buffer_bytes:
+            self._buffer.clear()
+            self._overflowed = True
             return
         self._buffer.extend(data)
 

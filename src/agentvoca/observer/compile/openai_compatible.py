@@ -70,10 +70,9 @@ def _serialise_block_for_llm(block: list[ObserverEvent]) -> str:
         "",
     ]
 
-    char_count = sum(len(line) for line in lines)
+    char_count = len("\n".join(lines))
     for event in block:
-        if char_count > _BLOCK_CHAR_BUDGET:
-            lines.append("... (further events omitted for length)")
+        if char_count >= _BLOCK_CHAR_BUDGET:
             break
         kind = event.kind
         ts = event.ts_ms
@@ -103,7 +102,11 @@ def _serialise_block_for_llm(block: list[ObserverEvent]) -> str:
         elif kind == "focus_change":
             prev = event.meta.get("previous_app", "")
             lines.append(f"[{ts}] [focus_change] app={event.app_name} prev={prev}")
-        char_count = sum(len(line) for line in lines)
+        char_count = len("\n".join(lines))
+        if char_count > _BLOCK_CHAR_BUDGET:
+            overflow = char_count - _BLOCK_CHAR_BUDGET
+            lines[-1] = lines[-1][:-overflow]
+            break
 
     return "\n".join(lines)
 
@@ -125,7 +128,10 @@ def _parse_block_response(text: str) -> tuple[str, str]:
             summary = stripped.split(":", 1)[1].strip()
         else:
             body_lines.append(line)
-    return "\n".join(body_lines).strip(), summary
+    body = "\n".join(body_lines).strip()
+    if not summary and body:
+        summary = next((line.strip()[:240] for line in body.splitlines() if line.strip()), "")
+    return body, summary
 
 
 class OpenAICompatibleCompiler(SessionCompiler):
@@ -269,7 +275,7 @@ class OpenAICompatibleCompiler(SessionCompiler):
                 logger.warning("Block %d raised during gather (%s); using rules", i, r)
                 from agentvoca.observer.compile.rules import RulesCompiler
 
-                md, rec = RulesCompiler(self._config)._render_block(blocks[i], index=i)  # type: ignore[attr-defined]
+                md, rec = _render_block(blocks[i], index=i)
                 block_markdowns.append(md)
                 block_records.append(rec)
                 block_summaries.append("")

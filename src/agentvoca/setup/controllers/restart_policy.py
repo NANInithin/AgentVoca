@@ -58,6 +58,7 @@ _RESTART_FIELDS: frozenset[str] = frozenset(
         "vision.endpoint",
         "vision.api_key_env",
         "vision.model",
+        "vision.extra",
         # App-level flags affect the running state machine.
         "app.profile",
         "app.language",
@@ -68,6 +69,7 @@ _RESTART_FIELDS: frozenset[str] = frozenset(
         # bound to the dir, and turning the feature on/off re-creates
         # the capture + compile subsystems in main.py.
         "observer.enabled",
+        "observer",
         "observer.storage",
         "observer.storage.dir",
     }
@@ -102,10 +104,9 @@ _HOT_FIELDS: frozenset[str] = frozenset(
         "vocabulary.path",
         "vocabulary.inline",
         "snippets.path",
+        "snippets.inline",
         # Context — read fresh each cleanup pass.
         "context.enabled",
-        "context.read_screen",
-        "context.read_clipboard",
         "context.profiles",
         # Commands — read on each transcript.
         "commands.enabled",
@@ -118,42 +119,6 @@ _HOT_FIELDS: frozenset[str] = frozenset(
         "vision.capture_timeout_s",
         "vision.anchor_phrases",
         "vision.output_format",
-        # v0.4.0: Observer runtime knobs are picked up the next time
-        # a session is started, not the next time the user opens
-        # settings. The capture subsystem reads them from the
-        # controller's draft on each start.
-        "observer.triggers",
-        "observer.triggers.window_change",
-        "observer.triggers.scroll_settle",
-        "observer.triggers.click_selection",
-        "observer.triggers.speech_onset",
-        "observer.triggers.scroll_settle_ms",
-        "observer.triggers.min_interval_ms",
-        "observer.triggers.max_keyframes_per_min",
-        "observer.screen",
-        "observer.screen.scope",
-        "observer.screen.max_width_px",
-        "observer.screen.jpeg_quality",
-        "observer.screen.dedup_phash_distance",
-        "observer.ocr",
-        "observer.ocr.provider",
-        "observer.ocr.endpoint",
-        "observer.ocr.api_key_env",
-        "observer.ocr.model",
-        "observer.ocr.max_queue",
-        "observer.selection",
-        "observer.selection.enabled",
-        "observer.selection.method",
-        "observer.selection.max_chars",
-        "observer.compile",
-        "observer.compile.provider",
-        "observer.compile.endpoint",
-        "observer.compile.api_key_env",
-        "observer.compile.model",
-        "observer.compile.formats",
-        "observer.privacy",
-        "observer.privacy.exclude_apps",
-        "observer.privacy.exclude_title_patterns",
     }
 )
 

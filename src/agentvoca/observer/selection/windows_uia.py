@@ -19,9 +19,10 @@ OCR-rect.
 from __future__ import annotations
 
 import logging
+import queue
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Optional
 
@@ -40,6 +41,51 @@ _UIA_TextPatternId = 10014
 
 # COINIT_APARTMENTTHREADED = 0x2
 _COINIT_APARTMENTTHREADED = 0x2
+
+
+class _DaemonWorker:
+    """One bounded UIA worker that cannot hold process shutdown hostage."""
+
+    def __init__(self) -> None:
+        self._jobs: queue.Queue[tuple[Future, object] | None] = queue.Queue(maxsize=1)
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name="observer-selection", daemon=True)
+        self._thread.start()
+
+    def submit(self, fn) -> Future:
+        if self._closed:
+            raise RuntimeError("UIA worker is closed")
+        future: Future = Future()
+        self._jobs.put_nowait((future, fn))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            future, fn = job
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(fn())
+                except BaseException as exc:
+                    future.set_exception(exc)
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
+        self._closed = True
+        if cancel_futures:
+            try:
+                job = self._jobs.get_nowait()
+                if job is not None:
+                    job[0].cancel()
+            except queue.Empty:
+                pass
+        try:
+            self._jobs.put_nowait(None)
+        except queue.Full:
+            pass
+        if wait:
+            self._thread.join()
 
 
 class WindowsUIASelectionReader(SelectionReader):
@@ -66,14 +112,14 @@ class WindowsUIASelectionReader(SelectionReader):
         # Windows-only comtypes dependency is not paid at import time
         # on macOS/Linux (the registry never resolves the UIA
         # reader there).
-        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor: Optional[_DaemonWorker] = None
+        self._abandoned_workers = 0
         # Track which foreground app names we have already logged a
         # timeout for, so a slow app does not flood DEBUG output.
         self._timed_out_apps: set[str] = set()
         self._timed_out_lock = threading.Lock()
         # COM apartment is per-thread; the worker thread inits once.
-        self._com_inited = False
-        self._com_lock = threading.Lock()
+        self._com_state = threading.local()
         # Availability is decided on first call (a working UIA env is
         # the common case on Windows).
         self._checked_availability: bool = False
@@ -117,6 +163,8 @@ class WindowsUIASelectionReader(SelectionReader):
                 import comtypes.client  # noqa: F401, PLC0415
                 import comtypes.gen  # noqa: F401, PLC0415
 
+                comtypes.client.GetModule("UIAutomationCore.dll")
+
                 self._available = True
             except Exception:
                 self._available = False
@@ -127,15 +175,24 @@ class WindowsUIASelectionReader(SelectionReader):
         if not self.is_available():
             return None
         if self._executor is None:
-            self._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="observer-selection"
-            )
+            self._executor = _DaemonWorker()
         timeout_s = (timeout_ms if timeout_ms is not None else self._timeout_ms) / 1000.0
         future = self._executor.submit(self._read_sync)
         try:
             return future.result(timeout=timeout_s)
         except FuturesTimeout:
             self._log_timeout()
+            # A COM call can remain blocked after Future.result times out.
+            # Rotate workers so later selections do not queue behind it.
+            old_executor = self._executor
+            self._abandoned_workers += 1
+            if self._abandoned_workers >= 3:
+                self._available = False
+                self._executor = None
+                logger.warning("UIA selection disabled after repeated hung calls")
+            else:
+                self._executor = _DaemonWorker()
+            old_executor.shutdown(wait=False, cancel_futures=True)
             return None
         except Exception:
             logger.debug("UIA read_selection raised", exc_info=True)
@@ -143,9 +200,8 @@ class WindowsUIASelectionReader(SelectionReader):
 
     def _read_sync(self) -> Optional[Selection]:
         """The actual UIA call, on a worker thread with COM init."""
-        with self._com_lock:
-            if not self._com_inited:
-                self._init_com()
+        if not getattr(self._com_state, "inited", False):
+            self._init_com()
         try:
             text = self._get_text()
         except Exception:
@@ -180,10 +236,10 @@ class WindowsUIASelectionReader(SelectionReader):
             import ctypes
 
             ctypes.windll.ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
-            self._com_inited = True
+            self._com_state.inited = True
         except Exception:
             logger.debug("COM init failed in UIA reader", exc_info=True)
-            self._com_inited = False
+            self._com_state.inited = False
 
     def _get_text(self) -> Optional[str]:
         """Call into UIA. Returns the selected text, or None on failure.
@@ -202,28 +258,15 @@ class WindowsUIASelectionReader(SelectionReader):
         if comtypes is None or comtypes_client is None:
             logger.debug("UIA: comtypes not imported; cannot read selection")
             return None
-        # ``comtypes.GUID`` is a class re-exported by the top-level
-        # comtypes package. Older releases exposed it as a function —
-        # fall back gracefully.
-        GUID = getattr(comtypes, "GUID", None)
-        if GUID is None:
-            logger.debug("UIA: comtypes.GUID not available")
-            return None
         CreateObject = comtypes_client.CreateObject
-        GetModule = comtypes_client.GetModule
-        CoCreateInstance = comtypes.CoCreateInstance
-
-        # IUIAutomation interface ID and TextPattern.
-        IUIAutomation_IID = GUID("{30CBE57D-9FB4-11D2-9268-00C04C796984}")
+        uia = sys.modules.get("comtypes.gen.UIAutomationClient")
+        if uia is None:
+            logger.debug("UIA type library was not loaded")
+            return None
         UIA_TextPatternId = _UIA_TextPatternId
 
         try:
-            automation = CreateObject(
-                CoCreateInstance(
-                    GetModule(("{30CBE57D-9FB4-11D2-9268-00C04C796984}", 1, 0)).IUIAutomation,
-                    interface=IUIAutomation_IID,
-                )
-            )
+            automation = CreateObject(uia.CUIAutomation, interface=uia.IUIAutomation)
         except Exception as exc:
             logger.debug("UIA: CoCreateInstance failed: %s", exc)
             self._available = False
@@ -244,7 +287,8 @@ class WindowsUIASelectionReader(SelectionReader):
         if pattern is None:
             return None
         try:
-            selection = pattern.GetSelection()
+            text_pattern = pattern.QueryInterface(uia.IUIAutomationTextPattern)
+            selection = text_pattern.GetSelection()
         except Exception as exc:
             logger.debug("UIA: GetSelection failed: %s", exc)
             return None
@@ -260,7 +304,7 @@ class WindowsUIASelectionReader(SelectionReader):
         # Pull the first range only — multi-range selection is rare
         # and not worth a UIA round-trip per range.
         try:
-            text_range = selection.GetTextElement(0)
+            text_range = selection.GetElement(0)
         except Exception as exc:
             logger.debug("UIA: GetTextElement failed: %s", exc)
             return None

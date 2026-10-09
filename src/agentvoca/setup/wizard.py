@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from PySide6 import QtCore, QtWidgets
 
 from agentvoca import __version__
-from agentvoca.setup.first_run import mark_first_run_complete
+from agentvoca.setup.first_run import mark_first_run_complete, set_wizard_auto_open
 from agentvoca.setup.pages import (
     AdvancedPage,
     AppBasicsPage,
@@ -40,6 +40,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _PageWrapper(QtWidgets.QWizardPage):
+    def __init__(self, widget: ConfigPage) -> None:
+        super().__init__()
+        self._widget = widget
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget)
+
+    def isComplete(self) -> bool:  # noqa: N802 - Qt override
+        return self._widget.is_complete()
+
+
 def _as_wizard_page(widget: ConfigPage) -> QtWidgets.QWizardPage:
     """Wrap a ``ConfigPage`` so it can be added to a ``QWizard``.
 
@@ -47,12 +59,7 @@ def _as_wizard_page(widget: ConfigPage) -> QtWidgets.QWizardPage:
     delegates ``isComplete`` to the wrapped page so the validation on
     ``FinishPage`` still blocks navigation.
     """
-    page = QtWidgets.QWizardPage()
-    layout = QtWidgets.QVBoxLayout(page)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.addWidget(widget)
-    page.isComplete = widget.is_complete  # type: ignore[method-assign]
-    return page
+    return _PageWrapper(widget)
 
 
 class SetupWizard(QtWidgets.QWizard):
@@ -78,6 +85,7 @@ class SetupWizard(QtWidgets.QWizard):
         self.resize(720, 600)
 
         welcome = WelcomePage(controller)
+        self._welcome = welcome
         if startup_warning:
             welcome.show_startup_warning(startup_warning)
         self._pages = [
@@ -112,6 +120,7 @@ class SetupWizard(QtWidgets.QWizard):
         # in lock-step with QWizard's own currentId so we always know which
         # page is being left on every navigation.
         self._current_id: int = -1
+        self._closing = False
         self.currentIdChanged.connect(self._on_current_changed)
 
     # ── Qt overrides ───────────────────────────────────────────────────
@@ -122,13 +131,18 @@ class SetupWizard(QtWidgets.QWizard):
             # 1. Push every page's UI into the controller draft *first*.
             # Without this, the wizard would persist whatever was loaded
             # from disk and silently drop everything the user just typed.
-            for page in self._pages:
-                page.save_to_controller()
+            try:
+                for page in self._pages:
+                    page.save_to_controller()
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(self, "Invalid settings", str(exc))
+                return
 
             # 2. Validate + persist via the shared controller path.
             save_result = self._controller.save()
             if save_result.success:
                 mark_first_run_complete(__version__)
+                set_wizard_auto_open(self._welcome.auto_open_enabled)
                 logger.info(
                     "Wizard saved config (hot=%d, restart=%d)",
                     len(save_result.hot_paths),
@@ -146,6 +160,7 @@ class SetupWizard(QtWidgets.QWizard):
                 )
                 # Stay in the wizard so the user can retry.
                 return
+        self._closing = True
         super().done(result)
 
     def accept(self) -> None:
@@ -158,7 +173,7 @@ class SetupWizard(QtWidgets.QWizard):
         # non-zero once the user has accepted/rejected, and QWizard fires
         # currentIdChanged during teardown — we must not overwrite the
         # just-saved draft (or any unsaved user input) at that point.
-        if self.result() != 0:
+        if self._closing:
             return
 
         # 1. Capture the page we're leaving: push its UI into the controller

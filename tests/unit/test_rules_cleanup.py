@@ -15,7 +15,7 @@ def provider():
 async def test_filler_removal(provider):
     """Test that common filler words are removed."""
     input_text = "uhm so like i mean basically it works"
-    expected = "So it works."  # Capitalization and punctuation also applied
+    expected = "So like basically it works."  # Ambiguous words remain intact
     result = await provider.rewrite(input_text)
     assert result == expected
 

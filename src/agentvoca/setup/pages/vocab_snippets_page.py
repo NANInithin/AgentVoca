@@ -137,13 +137,7 @@ class VocabSnippetsPage(ConfigPage):
         self._vocab_file.setText(c.vocabulary.path or "")
         self._fill_table(self._vocab_table, [[t] for t in c.vocabulary.inline])
         self._snip_file.setText(c.snippets.path or "")
-        # snippets.path points to YAML — we don't try to read it; the user
-        # manages that file separately. Inline snippets from the config are
-        # shown as a hint.
-        inline_snippets: list[list[str]] = []
-        # No inline snippets field on the schema, but the SnippetExpander
-        # constructor accepts a dict. We surface path-only inline editing
-        # by leaving the table empty if no inline data is present.
+        inline_snippets = [[key, value] for key, value in c.snippets.inline.items()]
         self._fill_table(self._snip_table, inline_snippets)
 
     def save_to_controller(self) -> None:
@@ -155,6 +149,11 @@ class VocabSnippetsPage(ConfigPage):
             },
             snippets={
                 "path": self._snip_file.text().strip() or None,
+                "inline": {
+                    trigger.strip(): expansion.strip()
+                    for trigger, expansion in self._read_table(self._snip_table)
+                    if trigger.strip() and expansion.strip()
+                },
             },
         )
 

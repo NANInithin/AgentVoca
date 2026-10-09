@@ -18,6 +18,7 @@ _PROFILE_OPTIONS = [
     ("Technical (preserve code)", "technical"),
     ("Professional (formal)", "professional"),
     ("Raw (no cleanup)", "raw"),
+    ("Custom", "custom"),
 ]
 
 

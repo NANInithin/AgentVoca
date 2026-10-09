@@ -359,16 +359,18 @@ class TestOutputDirResolution:
         cfg = FullConfig(
             asr=ASRConfig(provider="faster_whisper", model="base"),
         )
-        assert cfg.observer.compile.output_dir.endswith("/exports")
+        assert cfg.observer.compile.output_dir == ""
+        assert cfg.observer.resolved_output_dir.endswith("/exports")
         # Should embed the storage dir prefix.
-        assert cfg.observer.storage.dir.rstrip("/").rstrip("\\") in cfg.observer.compile.output_dir
+        assert cfg.observer.storage.dir.rstrip("/").rstrip("\\") in cfg.observer.resolved_output_dir
 
     def test_custom_storage_dir_propagates(self) -> None:
         cfg = FullConfig(
             asr=ASRConfig(provider="faster_whisper", model="base"),
             observer=ObserverConfig(storage=ObserverStorageConfig(dir="/tmp/my_obs")),
         )
-        assert cfg.observer.compile.output_dir == "/tmp/my_obs/exports"
+        assert cfg.observer.compile.output_dir == ""
+        assert cfg.observer.resolved_output_dir == "/tmp/my_obs/exports"
 
     def test_explicit_output_dir_is_preserved(self) -> None:
         cfg = FullConfig(
@@ -379,6 +381,7 @@ class TestOutputDirResolution:
             ),
         )
         assert cfg.observer.compile.output_dir == "/elsewhere/exports"
+        assert cfg.observer.resolved_output_dir == "/elsewhere/exports"
 
     def test_storage_dir_not_expanded_at_load(self) -> None:
         """The settings UI round-trips the user's literal string. expanduser
@@ -414,8 +417,8 @@ class TestRoundTrip:
         assert cloned.observer.storage.retention_days == 14
         assert cloned.observer.triggers.max_keyframes_per_min == 8
         assert cloned.observer.compile.formats == ["json"]
-        # output_dir was resolved; should round-trip the resolved value.
-        assert cloned.observer.compile.output_dir == "/custom/obs/exports"
+        assert cloned.observer.compile.output_dir == ""
+        assert cloned.observer.resolved_output_dir == "/custom/obs/exports"
         assert cloned.hotkeys.toggle_observer == "ctrl+shift+o"
 
     def test_minimal_config_round_trip(self) -> None:

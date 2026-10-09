@@ -8,6 +8,7 @@ the markdown about where blocks begin.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -37,11 +38,15 @@ class JsonExporter:
         Returns:
             The absolute path the JSON sidecar landed at.
         """
+        return await asyncio.to_thread(self._export_sync, compiled)
+
+    def _export_sync(self, compiled: CompiledSession) -> str:
         blocks_payload = self._build_blocks(compiled)
         session = self._bundle.session
-        first_ts = self._bundle.events[0].ts_ms if self._bundle.events else session.started_at_ms
         last_ts = self._bundle.events[-1].ts_ms if self._bundle.events else session.ended_at_ms
-        duration_ms = max(0, (last_ts or 0) - first_ts)
+        duration_ms = max(
+            0, (session.ended_at_ms or last_ts or session.started_at_ms) - session.started_at_ms
+        )
         document = {
             "schema": "agentvoca.observer.session/1",
             "session": {
@@ -127,14 +132,6 @@ class JsonExporter:
                         {
                             "ts_ms": event.ts_ms,
                             "reason": f"pause_{reason}",
-                            "dropped": 0,
-                        }
-                    )
-                elif kind == "pause_end":
-                    gaps.append(
-                        {
-                            "ts_ms": event.ts_ms,
-                            "reason": "pause_end",
                             "dropped": 0,
                         }
                     )

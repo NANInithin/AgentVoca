@@ -108,6 +108,27 @@ async def test_openai_asr_uploads_a_real_wav_file(openai_config, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_asr_extra_does_not_send_local_or_override_core_fields(monkeypatch):
+    config = ASRConfig(
+        provider="openai_compatible",
+        endpoint="https://example.test/v1",
+        model="whisper-1",
+        extra={"device": "cuda", "beam_size": 5, "model": "wrong", "temperature": 0.2},
+    )
+    provider = OpenAICompatibleASRProvider(config)
+    response = MagicMock()
+    response.json.return_value = {"text": "ok"}
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as post:
+        post.return_value = response
+        await provider.transcribe_audio(_PCM_F32, 16000)
+    assert post.call_args.kwargs["data"] == {
+        "model": "whisper-1",
+        "response_format": "json",
+        "temperature": 0.2,
+    }
+
+
+@pytest.mark.asyncio
 async def test_openai_asr_failure(openai_config, monkeypatch):
     """Test OpenAICompatibleASRProvider error handling."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")

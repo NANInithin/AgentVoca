@@ -40,11 +40,6 @@ class AdvancedPage(ConfigPage):
         self._context_enabled = QtWidgets.QCheckBox("Enable context engine")
         layout.addRow("", self._context_enabled)
 
-        self._context_read_screen = QtWidgets.QCheckBox("Allow reading screen for context")
-        layout.addRow("", self._context_read_screen)
-        self._context_read_clipboard = QtWidgets.QCheckBox("Allow reading clipboard for context")
-        layout.addRow("", self._context_read_clipboard)
-
         layout.addRow(QtWidgets.QLabel("App-name glob → style:"))
         self._context_table = QtWidgets.QTableWidget(0, 2)
         self._context_table.setHorizontalHeaderLabels(["App glob", "Style"])
@@ -166,17 +161,17 @@ class AdvancedPage(ConfigPage):
             self._adaptive_path.setText(path)
 
     def _on_vision_env_helper(self) -> None:
-        EnvHelperDialog(
+        dialog = EnvHelperDialog(
             self._vision_api_key_env.text().strip() or "OPENROUTER_API_KEY", self
-        ).exec()
+        )
+        dialog.env_var_changed.connect(self._vision_api_key_env.setText)
+        dialog.exec()
 
     # ── Load / save ────────────────────────────────────────────────────
 
     def load_from_controller(self) -> None:
         c = self.controller.draft
         self._context_enabled.setChecked(c.context.enabled)
-        self._context_read_screen.setChecked(c.context.read_screen)
-        self._context_read_clipboard.setChecked(c.context.read_clipboard)
         self._context_table.setRowCount(0)
         for glob, style in c.context.profiles.items():
             row = self._context_table.rowCount()
@@ -220,8 +215,6 @@ class AdvancedPage(ConfigPage):
                 profiles[glob_item.text().strip()] = style_item.text().strip()
         context = {
             "enabled": self._context_enabled.isChecked(),
-            "read_screen": self._context_read_screen.isChecked(),
-            "read_clipboard": self._context_read_clipboard.isChecked(),
             "profiles": profiles,
         }
 

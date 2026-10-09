@@ -148,6 +148,62 @@ class TestOverflow:
             await arb.stop()
 
 
+async def test_ambient_result_from_previous_session_is_dropped(fake_provider: FakeASR) -> None:
+    current_session = 1
+    received: list[str] = []
+    arb = ASRArbiter(
+        fake_provider,
+        is_session_current=lambda session_id: session_id == current_session,
+    )
+    arb.start(lambda text, _ts, _duration: received.append(text))
+    try:
+        arb.submit_ambient(b"old", ts_ms=100, duration_ms=100, sample_rate=16000, session_id=1)
+        await asyncio.sleep(0.01)
+        current_session = 2
+        await asyncio.sleep(0.08)
+        assert received == []
+        arb.submit_ambient(b"new", ts_ms=200, duration_ms=100, sample_rate=16000, session_id=2)
+        await asyncio.sleep(0.08)
+        assert len(received) == 1
+    finally:
+        await arb.stop()
+
+
+async def test_streaming_dictation_blocks_ambient_provider_calls() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class StreamingASR(FakeASR):
+        async def stream_transcribe(self, audio_stream, sample_rate, context=None):
+            entered.set()
+            await release.wait()
+            yield TranscriptSegment(text="dictated", is_final=True)
+
+    provider = StreamingASR(per_call_delay_s=0.01)
+    arb = ASRArbiter(provider)
+    arb.start(lambda *_args: None)
+
+    async def audio_stream():
+        yield b"dictation"
+
+    async def consume():
+        return [segment async for segment in arb.stream_priority(audio_stream(), 16000)]
+
+    try:
+        dictation = asyncio.create_task(consume())
+        await entered.wait()
+        arb.submit_ambient(b"ambient", ts_ms=100, duration_ms=100, sample_rate=16000)
+        await asyncio.sleep(0.03)
+        assert provider.calls == []
+        release.set()
+        assert (await dictation)[0].text == "dictated"
+        await asyncio.sleep(0.03)
+        assert len(provider.calls) == 1
+    finally:
+        release.set()
+        await arb.stop()
+
+
 # ── Exception safety ───────────────────────────────────────────────
 
 

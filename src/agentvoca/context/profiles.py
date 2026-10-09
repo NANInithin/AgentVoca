@@ -38,7 +38,10 @@ class ProfileResolver:
         self._patterns: dict[str, str] = {}
         for pattern, style in self._profiles.items():
             if pattern == "*":
-                self._fallback = style
+                if style in _VALID_STYLES:
+                    self._fallback = style
+                else:
+                    logger.warning("Ignoring fallback profile: unknown style '%s'", style)
             elif style in _VALID_STYLES:
                 self._patterns[pattern] = style
             else:

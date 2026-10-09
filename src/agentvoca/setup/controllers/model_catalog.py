@@ -16,6 +16,7 @@ back to the Qt main loop via a callback.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -62,7 +63,8 @@ class ModelCatalog:
             ...
 
     The wizard uses :meth:`fetch_async` which runs the call on a worker
-    thread and invokes ``on_done`` on the GUI thread with the result.
+    thread and invokes ``on_done`` on that worker thread. UI callers
+    marshal the result to the GUI thread.
     """
 
     # Defensive timeout for a single network call. OpenRouter normally
@@ -155,7 +157,7 @@ class ModelCatalog:
         on_done: Callable[[list[ModelEntry] | None, str | None], None],
         *,
         output_modality: str | None = None,
-    ) -> None:
+    ) -> threading.Thread:
         """Fetch on a background thread; deliver result via ``on_done``.
 
         ``on_done`` receives ``(entries, error)`` — exactly one of them is
@@ -164,7 +166,6 @@ class ModelCatalog:
         it needs to touch widgets. ``output_modality`` is forwarded to
         :meth:`fetch` (see there).
         """
-        import threading  # local import to keep the module import-cheap
 
         def _runner() -> None:
             try:
@@ -177,7 +178,9 @@ class ModelCatalog:
             else:
                 on_done(entries, None)
 
-        threading.Thread(target=_runner, daemon=True, name="model-catalog-fetch").start()
+        worker = threading.Thread(target=_runner, daemon=True, name="model-catalog-fetch")
+        worker.start()
+        return worker
 
     def clear_cache(self) -> None:
         """Drop the cached model list. Used when the user changes the endpoint."""

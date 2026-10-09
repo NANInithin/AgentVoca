@@ -32,6 +32,8 @@ class KeyboardInsertionStrategy(InsertionStrategy):
     def __init__(self, config: InsertionConfig) -> None:
         self._config = config
         self._last_text: Optional[str] = None
+        self._last_method: Optional[str] = None
+        self.partial_failure = False
         # Win32 handle of the window that received the last insertion.
         # Saved so undo_last() can refocus the correct window even if the
         # user switched focus before pressing the undo hotkey.
@@ -70,6 +72,10 @@ class KeyboardInsertionStrategy(InsertionStrategy):
         if not text:
             return InsertionResult(success=True, method_used="keyboard")
 
+        self._last_text = None
+        self._last_method = None
+        self.partial_failure = False
+
         # Save the focused window NOW before any key events are sent.
         # undo_last() needs this handle to refocus the correct window.
         self._last_hwnd = get_foreground_hwnd()
@@ -81,9 +87,10 @@ class KeyboardInsertionStrategy(InsertionStrategy):
             logger.debug("Non-ASCII text detected — using clipboard for insertion")
             from agentvoca.insertion.clipboard import ClipboardInsertionStrategy  # noqa: PLC0415
 
-            return await ClipboardInsertionStrategy(self._config).insert(text)
-
-        self._last_text = text
+            result = await ClipboardInsertionStrategy(self._config).insert(text)
+            if result.success:
+                self._last_method = "clipboard"
+            return result
 
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -91,8 +98,13 @@ class KeyboardInsertionStrategy(InsertionStrategy):
                 lambda: pyautogui.typewrite(text, interval=self._type_interval),
             )
             logger.debug("Inserted %d chars via keyboard", len(text))
+            self._last_text = text
+            self._last_method = "keyboard"
             return InsertionResult(success=True, method_used="keyboard")
         except Exception as exc:
+            # pyautogui may have typed a prefix. Never backspace an assumed
+            # length or paste the full text over that unknown prefix.
+            self.partial_failure = True
             logger.warning("Keyboard insertion failed: %s", exc)
             return InsertionResult(
                 success=False,
@@ -113,14 +125,21 @@ class KeyboardInsertionStrategy(InsertionStrategy):
         3. Fall back to Ctrl+Z when the inserted text length is unknown
            (e.g. clipboard path or non-ASCII text).
         """
-        count = len(self._last_text) if self._last_text else 0
+        if self._last_method is None:
+            return False
+        count = len(self._last_text) if self._last_method == "keyboard" and self._last_text else 0
         hwnd = self._last_hwnd
         loop = asyncio.get_running_loop()
 
         try:
             # Step 1: refocus the insertion window on Windows.
             if hwnd and is_windows():
-                await loop.run_in_executor(get_input_executor(), lambda: focus_window(hwnd))
+                focused = await loop.run_in_executor(
+                    get_input_executor(), lambda: focus_window(hwnd)
+                )
+                if not focused:
+                    logger.warning("Undo skipped because the insertion window could not be focused")
+                    return False
                 # Brief pause so the window activation settles before we type.
                 await asyncio.sleep(0.08)
 
@@ -132,6 +151,7 @@ class KeyboardInsertionStrategy(InsertionStrategy):
                 )
                 logger.debug("Undid %d chars via backspace", count)
                 self._last_text = None
+                self._last_method = None
             else:
                 # Fallback: Ctrl+Z / Cmd+Z for clipboard-inserted text.
                 modifier = "command" if is_macos() else "ctrl"
@@ -140,6 +160,7 @@ class KeyboardInsertionStrategy(InsertionStrategy):
                     lambda: pyautogui.hotkey(modifier, "z"),
                 )
                 logger.debug("Sent undo hotkey (fallback — text length unknown)")
+                self._last_method = None
 
             return True
         except Exception as exc:

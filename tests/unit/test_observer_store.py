@@ -32,6 +32,18 @@ from agentvoca.observer.store import SCHEMA_VERSION, ObserverStore
 from agentvoca.utils.errors import ObserverError
 
 
+def test_start_reports_writer_initialization_failure(tmp_path: Path, monkeypatch) -> None:
+    store = ObserverStore(tmp_path)
+
+    def fail() -> None:
+        raise RuntimeError("schema unavailable")
+
+    monkeypatch.setattr(store, "_ensure_schema_meta", fail)
+    with pytest.raises(ObserverError, match="schema unavailable"):
+        store.start()
+    assert not store._started
+
+
 def _make_event(
     session_id: int,
     ts_ms: int,

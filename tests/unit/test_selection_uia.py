@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 import time
-from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import MagicMock
 
@@ -63,7 +62,7 @@ class _FakeSelection:
     def Length(self) -> int:
         return self._length
 
-    def GetTextElement(self, idx: int) -> _FakeTextRange:
+    def GetElement(self, idx: int) -> _FakeTextRange:
         return _FakeTextRange(self._text)
 
 
@@ -73,6 +72,9 @@ class _FakeTextPattern:
 
     def GetSelection(self) -> Optional[_FakeSelection]:
         return self._selection
+
+    def QueryInterface(self, _interface):
+        return self
 
 
 class _FakeElement:
@@ -95,18 +97,10 @@ def _install_fake_comtypes(monkeypatch, automation: _FakeAutomation) -> None:
     """Patch comtypes so ``CreateObject`` returns our fake automation."""
     import types
 
-    class _FakeGUID:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
     fake_client = types.ModuleType("comtypes.client")
     fake_client.CreateObject = MagicMock(return_value=automation)  # type: ignore[attr-defined]
-    fake_client.GetModule = MagicMock(  # type: ignore[attr-defined]
-        return_value=SimpleNamespace(IUIAutomation=object())
-    )
+    fake_client.GetModule = MagicMock()  # type: ignore[attr-defined]
     fake_module = types.ModuleType("comtypes")
-    fake_module.CoCreateInstance = MagicMock(return_value=automation)  # type: ignore[attr-defined]
-    fake_module.GUID = _FakeGUID  # type: ignore[attr-defined]
     # The production code accesses comtypes.client.GetModule(...). Bind
     # the submodule as an attribute so both `import comtypes.client`
     # and `comtypes.client` lookups work.
@@ -114,10 +108,15 @@ def _install_fake_comtypes(monkeypatch, automation: _FakeAutomation) -> None:
     # comtypes.gen is imported in is_available() to confirm the
     # gen-package init runs; provide a minimal stub.
     fake_gen = types.ModuleType("comtypes.gen")
+    fake_uia = types.ModuleType("comtypes.gen.UIAutomationClient")
+    fake_uia.CUIAutomation = object()  # type: ignore[attr-defined]
+    fake_uia.IUIAutomation = object()  # type: ignore[attr-defined]
+    fake_uia.IUIAutomationTextPattern = object()  # type: ignore[attr-defined]
     fake_module.gen = fake_gen  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "comtypes", fake_module)
     monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
     monkeypatch.setitem(sys.modules, "comtypes.gen", fake_gen)
+    monkeypatch.setitem(sys.modules, "comtypes.gen.UIAutomationClient", fake_uia)
     # Mark comtypes as available so the reader proceeds.
     # (is_available() in production imports the modules; here we just
     # confirm the patch is in place.)

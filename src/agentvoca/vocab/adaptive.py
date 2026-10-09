@@ -78,7 +78,8 @@ class AdaptiveStore:
 
         # If already learned as mapping, ignore
         if any(
-            w.lower() == wrong_clean.lower() and r == right_clean for w, r in self.learned_mappings
+            w.lower() == wrong_clean.lower() and r.lower() == right_clean.lower()
+            for w, r in self.learned_mappings
         ):
             return False
 

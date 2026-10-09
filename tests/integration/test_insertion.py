@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import AsyncIterator, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,16 @@ from agentvoca.core.events import InsertionCompleteEvent, RecordingStoppedEvent
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.core.types import ASRContext, CleanupContext, TranscriptSegment
+
+
+@pytest.fixture(autouse=True)
+def _mock_clipboard_snapshot(monkeypatch):
+    """Paste spies in this module do not run a Qt clipboard event loop."""
+    monkeypatch.setattr("agentvoca.insertion.clipboard.snapshot", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        "agentvoca.insertion.clipboard.restore_if_ours", AsyncMock(return_value=True)
+    )
+
 
 # ── Minimal mock providers ──────────────────────────────────────────
 

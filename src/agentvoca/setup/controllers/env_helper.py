@@ -69,8 +69,11 @@ def powershell_snippet(name: str, value: str) -> str:
     Uses ``[Environment]::SetEnvironmentVariable`` with target ``User`` so it
     survives reboots and applies to all new processes for that user.
     """
-    quoted_value = value.replace('"', '`"')
-    return f'[System.Environment]::SetEnvironmentVariable("{name}", "{quoted_value}", "User")'
+    quoted_name = name.replace("'", "''")
+    quoted_value = value.replace("'", "''")
+    return (
+        f"[System.Environment]::SetEnvironmentVariable('{quoted_name}', '{quoted_value}', 'User')"
+    )
 
 
 def bash_snippet(name: str, value: str) -> str:

@@ -111,10 +111,12 @@ class SnippetExpander:
         self._snippets: dict[str, str] = {}
 
         if path is not None:
-            self._snippets.update(_load_snippets(path))
+            self._snippets.update(
+                {key.lower(): value for key, value in _load_snippets(path).items()}
+            )
 
         if snippets is not None:
-            self._snippets.update(snippets)
+            self._snippets.update({key.lower(): value for key, value in snippets.items()})
 
         self._pattern = _build_pattern(list(self._snippets.keys()))
 

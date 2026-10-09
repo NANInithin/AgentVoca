@@ -11,6 +11,7 @@ Only the chrome differs.
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -47,6 +48,8 @@ class SettingsWindow(QtWidgets.QMainWindow):
     ) -> None:
         super().__init__(parent)
         self._controller = controller
+        self._loading_pages = False
+        self._widgets_dirty = False
 
         self.setWindowTitle("agentvoca Settings")
         self.resize(820, 640)
@@ -123,6 +126,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
         layout.addWidget(button_widget)
 
         self.setCentralWidget(central)
+        self._watch_page_edits()
         self._refresh()
 
     # ── State helpers ──────────────────────────────────────────────────
@@ -133,10 +137,41 @@ class SettingsWindow(QtWidgets.QMainWindow):
             page = self._tabs.widget(i)
             page.save_to_controller()
 
+    def _watch_page_edits(self) -> None:
+        """Track edits before they are copied to the validated config draft."""
+        signals = (
+            (QtWidgets.QLineEdit, "textChanged"),
+            (QtWidgets.QTextEdit, "textChanged"),
+            (QtWidgets.QPlainTextEdit, "textChanged"),
+            (QtWidgets.QComboBox, "currentIndexChanged"),
+            (QtWidgets.QCheckBox, "toggled"),
+            (QtWidgets.QRadioButton, "toggled"),
+            (QtWidgets.QSpinBox, "valueChanged"),
+            (QtWidgets.QDoubleSpinBox, "valueChanged"),
+            (QtWidgets.QTableWidget, "itemChanged"),
+        )
+        for widget_type, signal_name in signals:
+            for widget in self._tabs.findChildren(widget_type):
+                getattr(widget, signal_name).connect(self._on_widget_edited)
+        for table in self._tabs.findChildren(QtWidgets.QTableWidget):
+            table.model().rowsInserted.connect(self._on_widget_edited)
+            table.model().rowsRemoved.connect(self._on_widget_edited)
+
+    def _on_widget_edited(self, *_args: object) -> None:
+        if self._loading_pages:
+            return
+        self._widgets_dirty = True
+        self._update_button_states()
+
     def _refresh(self) -> None:
         """Reload every page from the controller and update the banner."""
-        for i in range(self._tabs.count()):
-            self._tabs.widget(i).load_from_controller()
+        self._loading_pages = True
+        try:
+            for i in range(self._tabs.count()):
+                self._tabs.widget(i).load_from_controller()
+        finally:
+            self._loading_pages = False
+        self._widgets_dirty = False
         self._update_banner()
         self._update_button_states()
 
@@ -152,7 +187,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
             self._banner.setVisible(False)
 
     def _update_button_states(self) -> None:
-        dirty = self._controller.is_dirty()
+        dirty = self._widgets_dirty or self._controller.is_dirty()
         self._apply_btn.setEnabled(dirty)
         self._discard_btn.setEnabled(dirty)
         self._save_btn.setEnabled(dirty)
@@ -160,12 +195,20 @@ class SettingsWindow(QtWidgets.QMainWindow):
     # ── Slots ──────────────────────────────────────────────────────────
 
     def _on_apply(self) -> None:
-        self._collect()
+        try:
+            self._collect()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Invalid settings", str(exc))
+            return
         result = self._controller.save()
         self._handle_save_result(result, close=False)
 
     def _on_save(self) -> None:
-        self._collect()
+        try:
+            self._collect()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Invalid settings", str(exc))
+            return
         result = self._controller.save()
         self._handle_save_result(result, close=True)
 
@@ -186,7 +229,12 @@ class SettingsWindow(QtWidgets.QMainWindow):
             "Quit and re-launch so the new settings take effect?",
         )
         if confirm == QtWidgets.QMessageBox.StandardButton.Yes:
-            QtWidgets.QApplication.instance().quit()
+            args = [] if getattr(sys, "frozen", False) else ["-m", "agentvoca"]
+            args.extend(["-c", str(self._controller.path)])
+            if QtCore.QProcess.startDetached(sys.executable, args):
+                QtWidgets.QApplication.instance().quit()
+            else:
+                QtWidgets.QMessageBox.critical(self, "Restart failed", "Could not start agentvoca.")
 
     # ── Helpers ────────────────────────────────────────────────────────
 
@@ -200,6 +248,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
             return
 
         if result.success:
+            self._widgets_dirty = False
             try:
                 self.config_saved.emit(self._controller.draft)
             except Exception:
@@ -220,7 +269,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
     # ── Qt overrides ───────────────────────────────────────────────────
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        if self._controller.is_dirty():
+        if self._widgets_dirty or self._controller.is_dirty():
             choice = QtWidgets.QMessageBox.question(
                 self,
                 "Unsaved changes",
@@ -234,7 +283,10 @@ class SettingsWindow(QtWidgets.QMainWindow):
                 return
             if choice == QtWidgets.QMessageBox.StandardButton.Save:
                 self._on_save()
-                if self._controller.is_dirty():
+                if self._widgets_dirty or self._controller.is_dirty():
                     event.ignore()
                     return
+            elif choice == QtWidgets.QMessageBox.StandardButton.Discard:
+                self._controller.revert()
+                self._refresh()
         event.accept()

@@ -8,11 +8,12 @@ Run with::
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import logging
 import sys
 from pathlib import Path
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from agentvoca.app.hotkeys import HotkeyManager
 from agentvoca.app.overlay import StatusOverlay
@@ -28,6 +29,7 @@ from agentvoca.core.event_bus import EventBus
 from agentvoca.core.events import (
     ErrorEvent,
     HotkeyEvent,
+    ObserverSessionEndedEvent,
     ObserverUtteranceEvent,
     ScreenshotCapturedEvent,
 )
@@ -44,6 +46,10 @@ from agentvoca.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG_PATH = Path.home() / ".agentvoca" / "config.yaml"
+
+
+class _UiRelay(QtCore.QObject):
+    show_settings = QtCore.Signal()
 
 
 def _show_observer_recovery_dialog(
@@ -107,47 +113,60 @@ def _show_observer_recovery_dialog(
         compiler = getattr(observer_controller, "_compiler", None)
         loop = getattr(observer_controller, "_loop", None)
 
-        def _on_compile() -> None:
-            if store is None or compiler is None or loop is None:
+        def _on_compile(
+            *_args: object,
+            _session: ObserverSession = session,
+            _store: object = store,
+            _compiler: object = compiler,
+            _loop: object = loop,
+            _when: str = when,
+            _dialog: QtWidgets.QDialog = dialog,
+        ) -> None:
+            if _store is None or _compiler is None or _loop is None:
                 return
             try:
-                store.close_session(
-                    session.id, ended_at_ms=int(QtCore.QDateTime.currentMSecsSinceEpoch())
+                _store.close_session(
+                    _session.id, ended_at_ms=int(QtCore.QDateTime.currentMSecsSinceEpoch())
                 )
             except Exception:
-                logger.exception("Failed to mark session %d as closed", session.id)
+                logger.exception("Failed to mark session %d as closed", _session.id)
             try:
                 import asyncio  # noqa: PLC0415
 
                 asyncio.run_coroutine_threadsafe(
-                    getattr(observer_controller, "_run_compile")(session_id=session.id),
-                    loop,
+                    getattr(observer_controller, "_run_compile")(session_id=_session.id),
+                    _loop,
                 )
             except Exception:
-                logger.exception("Failed to schedule compile for session %d", session.id)
+                logger.exception("Failed to schedule compile for session %d", _session.id)
             try:
                 tray.show_message(
                     "Observer session compiled",
-                    f"Recompiling recovered session {when}",
+                    f"Recompiling recovered session {_when}",
                     icon=0,
                 )
             except Exception:
                 pass
-            dialog.accept()
+            _dialog.accept()
 
-        def _on_keep() -> None:
+        def _on_keep(*_args: object, _dialog: QtWidgets.QDialog = dialog) -> None:
             # Leave status='open'; the dialog asks again next launch.
-            dialog.accept()
+            _dialog.accept()
 
-        def _on_delete() -> None:
-            if store is None:
-                dialog.accept()
+        def _on_delete(
+            *_args: object,
+            _session: ObserverSession = session,
+            _store: object = store,
+            _dialog: QtWidgets.QDialog = dialog,
+        ) -> None:
+            if _store is None:
+                _dialog.accept()
                 return
             try:
-                store.purge_session(session.id)
+                _store.purge_session(_session.id)
             except Exception:
-                logger.exception("Failed to purge session %d", session.id)
-            dialog.accept()
+                logger.exception("Failed to purge session %d", _session.id)
+            _dialog.accept()
 
         compile_btn.clicked.connect(_on_compile)
         keep_btn.clicked.connect(_on_keep)
@@ -246,7 +265,13 @@ def _build_observer_capture(
 
             def _on_ambient_text(text: str, ts_ms: int, duration_ms: int) -> None:
                 """Store one ambient transcription. Runs on the loop thread."""
-                if not text.strip():
+                current = sessions.current
+                if (
+                    not text.strip()
+                    or current is None
+                    or ts_ms < current.started_at_ms
+                    or _is_excluded()
+                ):
                     return
                 recorded = sessions.record(
                     "utterance_ambient",
@@ -270,7 +295,10 @@ def _build_observer_capture(
                 """
                 arbiter = ASRArbiter(
                     provider=orchestrator._asr_provider,
-                    queue_depth=cfg.observer.ocr.max_queue,
+                    queue_depth=16,
+                    is_session_current=lambda sid: (
+                        sessions.current is not None and sessions.current.id == sid
+                    ),
                 )
                 arbiter.start(on_text=_on_ambient_text)
                 return arbiter
@@ -278,6 +306,10 @@ def _build_observer_capture(
             try:
                 asr_arbiter = loop_thread.submit(_start_arbiter()).result(timeout=10.0)
                 orchestrator.attach_asr_arbiter(asr_arbiter)
+                event_bus.subscribe(
+                    ObserverSessionEndedEvent,
+                    lambda event: asr_arbiter.discard_session(event.session_id),
+                )
             except Exception:
                 logger.exception(
                     "Observer ambient ASR could not start; continuing without ambient "
@@ -294,6 +326,13 @@ def _build_observer_capture(
                 cfg.observer.ocr.provider,
             )
             ocr_provider = None
+        if ocr_provider is not None:
+            warmup = ocr_provider.warm_up()
+            try:
+                observer_controller.track_ocr_future(loop_thread.submit(warmup))
+            except Exception:
+                warmup.close()
+                logger.debug("Observer OCR warm-up could not be scheduled", exc_info=True)
 
         selection_reader: object | None = None
         if cfg.observer.selection.enabled:
@@ -307,6 +346,7 @@ def _build_observer_capture(
                         max_chars=cfg.observer.selection.max_chars,
                         active_app=active_app,
                     )
+                    selection_reader.is_available()
                 else:
                     from agentvoca.observer.selection.noop import (  # noqa: PLC0415
                         NoopSelectionReader,
@@ -329,11 +369,18 @@ def _build_observer_capture(
         blob_seq = itertools.count()
         # Which exclusion pattern currently holds capture down, if any.
         # Used to emit exactly one pause_start / pause_end pair.
-        exclusion_state = {"pattern": ""}
+        exclusion_state = {"active": False}
+        import threading as _threading  # noqa: PLC0415
+
+        exclusion_lock = _threading.Lock()
+        ocr_slots = _threading.BoundedSemaphore(cfg.observer.ocr.max_queue)
 
         def _record_gap(reason: str, dropped: int) -> None:
             """Timeline row for data we intentionally dropped."""
             sessions.record("gap", meta={"reason": reason, "dropped": dropped})
+
+        if asr_arbiter is not None:
+            asr_arbiter.set_on_drop(lambda count: _record_gap("ambient_queue_full", count))
 
         def _is_excluded() -> bool:
             """Gate hook: is the foreground app/title privacy-excluded?
@@ -347,19 +394,42 @@ def _build_observer_capture(
                 app_name, window_title = active_app.detect()
             except Exception:
                 logger.debug("active-app detect failed in exclusion check", exc_info=True)
-                return False
-            excluded, pattern = exclusions.is_excluded(app_name, window_title)
-            if excluded:
-                if not exclusion_state["pattern"]:
-                    exclusion_state["pattern"] = pattern or "excluded"
-                    sessions.record(
-                        "pause_start",
-                        meta={"reason": "excluded_app", "pattern": pattern or ""},
-                    )
-            elif exclusion_state["pattern"]:
-                exclusion_state["pattern"] = ""
-                sessions.record("pause_end", meta={"reason": "excluded_app"})
+                return True
+            excluded, _pattern = exclusions.is_excluded(app_name, window_title)
+            entered_exclusion = False
+            with exclusion_lock:
+                if excluded and not exclusion_state["active"]:
+                    exclusion_state["active"] = True
+                    entered_exclusion = True
+                    sessions.record("pause_start", meta={"reason": "excluded_app"})
+                elif not excluded and exclusion_state["active"]:
+                    exclusion_state["active"] = False
+                    sessions.record("pause_end", meta={"reason": "excluded_app"})
+            if entered_exclusion:
+                observer_controller.cancel_ocr_futures()
+                current = sessions.current
+                if asr_arbiter is not None and current is not None:
+                    asr_arbiter.discard_session(current.id)
             return excluded
+
+        sessions.set_privacy_gate(_is_excluded)
+
+        def _on_dictated_utterance(event: ObserverUtteranceEvent) -> None:
+            current = sessions.current
+            if (
+                event.source != "dictated"
+                or current is None
+                or event.session_id != current.id
+                or _is_excluded()
+            ):
+                return
+            sessions.record(
+                "utterance_dictated",
+                text=event.text,
+                meta={"duration_ms": event.duration_ms},
+            )
+
+        event_bus.subscribe(ObserverUtteranceEvent, _on_dictated_utterance)
 
         def _write_blob(session_uuid: str, jpeg: bytes) -> str | None:
             """Write a keyframe JPEG; return its path relative to storage.
@@ -392,7 +462,7 @@ def _build_observer_capture(
             blob_bytes[session_uuid] = written + len(jpeg)
             return f"blobs/{session_uuid}/{name}"
 
-        async def _run_ocr(event_id: int, jpeg: bytes) -> None:
+        async def _run_ocr(event_id: int, session_id: int, jpeg: bytes) -> None:
             """Extract text for one keyframe and patch its row.
 
             Runs on the loop thread. A failed extraction is recorded as
@@ -401,11 +471,16 @@ def _build_observer_capture(
             text is missing rather than empty.
             """
             started = _time.time()
+            if _is_excluded() or not observer_controller.accepts_ocr(session_id):
+                return
             try:
                 result = await ocr_provider.extract(jpeg)
             except Exception:
                 logger.debug("Observer OCR failed for event %d", event_id, exc_info=True)
-                store.set_event_text(event_id, "", {"ocr_status": "failed"})
+                if observer_controller.accepts_ocr(session_id) and not _is_excluded():
+                    store.set_event_text(event_id, "", {"ocr_status": "failed"})
+                return
+            if not observer_controller.accepts_ocr(session_id) or _is_excluded():
                 return
             meta_update = {
                 "ocr_status": "ok",
@@ -418,7 +493,7 @@ def _build_observer_capture(
 
         def _record_selection() -> None:
             """Read the highlighted text after a drag-select."""
-            if selection_reader is None:
+            if selection_reader is None or _is_excluded():
                 return
             try:
                 selection = selection_reader.read_selection()
@@ -441,15 +516,22 @@ def _build_observer_capture(
 
         def _on_keyframe_grab(reason: str, grab: "Grab | None") -> None:
             """Store one keyframe. Runs on the ``observer-capture`` thread."""
+            if _is_excluded():
+                return
             if reason == "selection":
                 _record_selection()
             if grab is None:
                 return  # degenerate rect, or a dedup hit — both already counted
+            if exclusions.is_excluded(grab.app_name, grab.window_title)[0]:
+                return
             session = sessions.current
             if session is None or observer_controller.is_paused:
                 return  # the session closed or paused between gate and grab
             blob_path = _write_blob(session.uuid, grab.jpeg)
             if blob_path is None:
+                return
+            if _is_excluded() or sessions.current is not session:
+                (store.blobs_dir / session.uuid / Path(blob_path).name).unlink(missing_ok=True)
                 return
             try:
                 event_id = store.append_returning_id(
@@ -472,6 +554,7 @@ def _build_observer_capture(
                 )
             except Exception:
                 logger.warning("Observer: keyframe row insert failed", exc_info=True)
+                (store.blobs_dir / session.uuid / Path(blob_path).name).unlink(missing_ok=True)
                 return
             event_bus.publish(
                 ObserverKeyframeEvent(
@@ -481,7 +564,19 @@ def _build_observer_capture(
                 )
             )
             if ocr_provider is not None:
-                loop_thread.submit(_run_ocr(event_id, grab.jpeg))
+                if not ocr_slots.acquire(blocking=False):
+                    _record_gap("ocr_queue_full", 1)
+                    return
+                coroutine = _run_ocr(event_id, session.id, grab.jpeg)
+                try:
+                    future = loop_thread.submit(coroutine)
+                except Exception:
+                    coroutine.close()
+                    ocr_slots.release()
+                    _record_gap("ocr_submit_failed", 1)
+                else:
+                    future.add_done_callback(lambda _future: ocr_slots.release())
+                    observer_controller.track_ocr_future(future)
 
         def _enqueue_keyframe(reason: str) -> None:
             """Gate → capture worker.
@@ -511,13 +606,15 @@ def _build_observer_capture(
         )
 
         def _submit_ambient(audio: bytes, ts_ms: int, duration_ms: int) -> None:
-            if asr_arbiter is None:
+            current = sessions.current
+            if asr_arbiter is None or current is None or _is_excluded():
                 return
             asr_arbiter.submit_ambient(
                 audio,
                 ts_ms=ts_ms,
                 duration_ms=duration_ms,
                 sample_rate=cfg.audio.sample_rate,
+                session_id=current.id,
             )
 
         ambient_listener = AmbientListener(
@@ -526,6 +623,7 @@ def _build_observer_capture(
             on_utterance=_submit_ambient,
             sample_rate=cfg.audio.sample_rate,
             on_speech_onset=trigger_engine.on_speech_onset,
+            capture_allowed=lambda: not _is_excluded(),
         )
 
         audio.set_ambient_sink(ambient_listener)
@@ -632,6 +730,9 @@ def main(argv: list[str] | None = None) -> int:
     # ── Qt Application ───────────────────────────────────────────────
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    from agentvoca.insertion.clipboard_snapshot import init_clipboard_bridge
+
+    init_clipboard_bridge()
 
     # ── Core objects ─────────────────────────────────────────────────
     event_bus = EventBus()
@@ -660,6 +761,9 @@ def main(argv: list[str] | None = None) -> int:
     # class is imported lazily inside _build_and_start_pipeline to keep
     # the cold-start import path lean.
     observer_controller: object | None = None
+    observer_action_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="observer-actions"
+    )
 
     # ── UI scaffolding (tray, overlay) ───────────────────────────────
     # Built up front so the user has a UI surface immediately, even before
@@ -667,6 +771,7 @@ def main(argv: list[str] | None = None) -> int:
     overlay = StatusOverlay(event_bus)
 
     tray = TrayApp(event_bus)
+    ui_relay = _UiRelay()
     settings_window: SettingsWindow | None = None
     wizard: SetupWizard | None = None
 
@@ -718,8 +823,9 @@ def main(argv: list[str] | None = None) -> int:
 
     def open_settings() -> None:
         nonlocal settings_window
-        settings_window = SettingsWindow(controller)
-        settings_window.config_saved.connect(_reload_hot_components)
+        if settings_window is None:
+            settings_window = SettingsWindow(controller)
+            settings_window.config_saved.connect(_reload_hot_components)
         settings_window.show()
         settings_window.raise_()
         settings_window.activateWindow()
@@ -733,6 +839,7 @@ def main(argv: list[str] | None = None) -> int:
         wizard.activateWindow()
 
     tray.open_settings_action.triggered.connect(open_settings)
+    ui_relay.show_settings.connect(open_settings)
     tray.open_wizard_action.triggered.connect(open_wizard)
     tray.quit_action.triggered.connect(app.quit)
 
@@ -762,6 +869,20 @@ def main(argv: list[str] | None = None) -> int:
             icon=1,
         )
 
+    def _run_observer_action(action: str) -> None:
+        if observer_controller is None:
+            return
+        try:
+            if action == "toggle":
+                observer_controller.toggle_session()
+            elif action == "pause":
+                if observer_controller.is_paused:
+                    observer_controller.resume()
+                else:
+                    observer_controller.pause()
+        except Exception:
+            logger.exception("Observer action %s failed", action)
+
     def on_hotkey(event: object) -> None:
         from agentvoca.core.events import StateChangedEvent  # noqa: PLC0415
 
@@ -777,7 +898,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 logger.debug("Starting recording")
                 # Reset any leftover streaming state before the new dictation.
-                loop_thread.call_soon(orchestrator.prepare_for_recording)
+                session_id = (
+                    observer_controller.sessions.current.id
+                    if observer_controller is not None and observer_controller.is_active
+                    else None
+                )
+                loop_thread.call_soon(orchestrator.prepare_for_recording, session_id)
                 audio.start_recording()
                 # Notify the overlay immediately so it appears during recording,
                 # not only after the pipeline starts (which happens post-stop).
@@ -791,7 +917,9 @@ def main(argv: list[str] | None = None) -> int:
             loop_thread.call_soon(orchestrator.cancel)
             event_bus.publish(StateChangedEvent(previous="recording", current="idle"))
         elif action == "open_settings":
-            open_settings()
+            ui_relay.show_settings.emit()
+        elif action == "insert_last":
+            loop_thread.submit(orchestrator.insert_last_transcript())
         elif action == "undo":
             loop_thread.submit(orchestrator.undo_last_insertion())
         elif action == "capture_screenshot":
@@ -805,15 +933,12 @@ def main(argv: list[str] | None = None) -> int:
         # becomes a no-op.
         elif action == "toggle_observer":
             if observer_controller is not None:
-                observer_controller.toggle_session()
+                observer_action_executor.submit(_run_observer_action, "toggle")
             else:
                 _notify_observer_unavailable()
         elif action == "pause_observer":
             if observer_controller is not None:
-                if observer_controller.is_paused:
-                    observer_controller.resume()
-                else:
-                    observer_controller.pause()
+                observer_action_executor.submit(_run_observer_action, "pause")
             else:
                 _notify_observer_unavailable()
 
@@ -853,12 +978,17 @@ def main(argv: list[str] | None = None) -> int:
 
             event_bus.subscribe(ScreenshotCapturedEvent, on_screenshot)
 
-        orchestrator = Orchestrator(
-            config=cfg,
-            registry=registry,
-            event_bus=event_bus,
-            screenshot_capturer=screenshot_capturer,
-        )
+        try:
+            orchestrator = Orchestrator(
+                config=cfg,
+                registry=registry,
+                event_bus=event_bus,
+                screenshot_capturer=screenshot_capturer,
+            )
+        except Exception as exc:
+            logger.exception("Failed to construct dictation pipeline")
+            tray.show_message("AgentVoca could not start", str(exc), icon=2)
+            return False
 
         # Audio capture (light: just opens a sounddevice stream).
         if cfg.asr.streaming:
@@ -914,6 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("Audio input opened")
         except AudioError as exc:
             logger.error("Failed to open audio input: %s", exc)
+            tray.show_message("AgentVoca could not start", str(exc), icon=2)
             return False
 
         # Orchestrator startup (kicks off model warm-up).
@@ -922,6 +1053,12 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("Orchestrator ready")
         except AgentVocaError as exc:
             logger.critical("Failed to start orchestrator: %s", exc)
+            tray.show_message("AgentVoca could not start", str(exc), icon=2)
+            audio.stop()
+            return False
+        except Exception as exc:
+            logger.exception("Unexpected dictation startup failure")
+            tray.show_message("AgentVoca could not start", str(exc), icon=2)
             audio.stop()
             return False
 
@@ -942,9 +1079,19 @@ def main(argv: list[str] | None = None) -> int:
             from agentvoca.observer.controller import ObserverController  # noqa: PLC0415
             from agentvoca.observer.store import ObserverStore  # noqa: PLC0415
 
-            observer_store = ObserverStore(root=_Path(cfg.observer.storage.dir).expanduser())
-            observer_store.start()
-            observer_store.purge_expired(cfg.observer.storage.retention_days)
+            try:
+                observer_store = ObserverStore(root=_Path(cfg.observer.storage.dir).expanduser())
+                observer_store.start()
+                observer_store.purge_expired(cfg.observer.storage.retention_days)
+            except Exception:
+                logger.exception("Observer store unavailable; dictation remains active")
+                tray.set_observer_available(False, reason="storage unavailable")
+                tray.show_message(
+                    "Observer unavailable",
+                    "Could not open Observer storage. Dictation remains available.",
+                    icon=2,
+                )
+                return True
 
             observer_controller = ObserverController(
                 config=cfg,
@@ -993,7 +1140,7 @@ def main(argv: list[str] | None = None) -> int:
                 coordinator = ExporterCoordinator(
                     store=observer_store,
                     formats=list(cfg.observer.compile.formats),
-                    out_dir=Path(cfg.observer.compile.output_dir).expanduser(),
+                    out_dir=Path(cfg.observer.resolved_output_dir).expanduser(),
                 )
                 indicator = ObserverIndicator(event_bus)
                 observer_controller.attach_surface(compiler, [coordinator], indicator)
@@ -1078,6 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
             settings_window.close()
         if hotkeys is not None:
             hotkeys.stop()
+        observer_action_executor.shutdown(wait=True, cancel_futures=True)
         if audio is not None:
             audio.stop()
         if orchestrator is not None:

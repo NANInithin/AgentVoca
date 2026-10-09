@@ -106,7 +106,10 @@ def split_blocks(bundle: SessionBundle) -> list[list["ObserverEvent"]]:
         prev = current[-1]
         opened_by_focus = event.kind == "focus_change"
         opened_by_gap = (
-            event.app_name == prev.app_name and (event.ts_ms - prev.ts_ms) > _BLOCK_GAP_MS
+            event.kind not in {"pause_start", "pause_end"}
+            and event.app_name is not None
+            and event.app_name == prev.app_name
+            and (event.ts_ms - prev.ts_ms) > _BLOCK_GAP_MS
         )
         if opened_by_focus or opened_by_gap:
             blocks.append(current)

@@ -141,10 +141,9 @@ def test_restart_classification_for_observer_enabled(qapp, tmp_path: Path) -> No
     assert is_restart_field("observer.enabled") is True
     # storage.dir too.
     assert is_restart_field("observer.storage.dir") is True
-    # Triggers are hot.
-    assert is_restart_field("observer.triggers.window_change") is False
-    # Compile provider is hot.
-    assert is_restart_field("observer.compile.provider") is False
+    # Capture and compile objects are constructed at startup.
+    assert is_restart_field("observer.triggers.window_change") is True
+    assert is_restart_field("observer.compile.provider") is True
 
 
 def test_hotkeys_page_contains_observer_actions(qapp, tmp_path: Path) -> None:

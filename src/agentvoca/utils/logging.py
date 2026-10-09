@@ -20,8 +20,11 @@ _DEFAULT_LOG_LEVEL = "INFO"
 
 def _get_log_dir() -> Path:
     """Return the log directory, creating it if necessary."""
-    log_dir = Path(os.environ.get("agentvoca_LOG_DIR", str(_DEFAULT_LOG_DIR)))
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(os.environ.get("AGENTVOCA_LOG_DIR", str(_DEFAULT_LOG_DIR)))
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ConfigError(f"Cannot create log directory {log_dir}: {exc}") from exc
     return log_dir
 
 
@@ -50,24 +53,24 @@ def setup_logging(
     log_path = log_file or (_get_log_dir() / "agentvoca.log")
 
     # Ensure parent directory exists
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
     try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.touch(exist_ok=True)
     except OSError as exc:
         raise ConfigError(f"Cannot write to log file {log_path}: {exc}") from exc
 
-    # Remove any pre-existing handlers to avoid duplicates on re-init
-    structlog.configure_once(
+    shared_processors = [
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.UnicodeDecoder(),
+    ]
+    structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.dev.ConsoleRenderer(),
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
@@ -78,6 +81,14 @@ def setup_logging(
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(colors=False),
+        foreign_pre_chain=shared_processors,
+    )
+    for handler in list(root_logger.handlers):
+        if getattr(handler, "_agentvoca_handler", False):
+            root_logger.removeHandler(handler)
+            handler.close()
 
     # File handler (rotating, 10MB max, 3 backups)
     try:
@@ -90,12 +101,8 @@ def setup_logging(
             encoding="utf-8",
         )
         file_handler.setLevel(level)
-        file_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
+        file_handler._agentvoca_handler = True
+        file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
     except OSError as exc:
         raise ConfigError(f"Cannot open log file {log_path}: {exc}") from exc
@@ -103,7 +110,8 @@ def setup_logging(
     # Console handler (stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(level)
-    console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    console_handler._agentvoca_handler = True
+    console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
     # Suppress noisy third-party loggers

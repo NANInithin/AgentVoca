@@ -58,7 +58,7 @@ def focus_window(hwnd: int) -> bool:
             user32.BringWindowToTop(hwnd)
         finally:
             user32.AttachThreadInput(current_tid, target_tid, False)
-        return True
+        return int(user32.GetForegroundWindow()) == hwnd
     except Exception as exc:
         logger.debug("focus_window(%d) failed: %s", hwnd, exc)
         return False

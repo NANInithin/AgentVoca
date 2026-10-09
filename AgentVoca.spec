@@ -32,11 +32,31 @@ a = Analysis(
     datas=[
         (str(ROOT / "config.example.yaml"), "."),
         (str(ROOT / "examples"), "examples"),
-        (str(ROOT / "docs"), "docs"),
+        (str(ROOT / "docs" / "observer.md"), "docs"),
+        (str(ROOT / "docs" / "config-reference.md"), "docs"),
+        (str(ROOT / "docs" / "troubleshooting.md"), "docs"),
+        (str(ROOT / "docs" / "performance.md"), "docs"),
+        (str(ROOT / "docs" / "release_notes"), "docs/release_notes"),
         # Bundle faster_whisper's ONNX assets (silero VAD model, tokenizer, etc.)
         (FW_ASSETS, "faster_whisper/assets"),
     ],
     hiddenimports=[
+        # Built-in providers are resolved from registry strings at runtime.
+        # PyInstaller cannot discover those imports from source analysis.
+        "agentvoca.asr.faster_whisper",
+        "agentvoca.asr.openai_compatible",
+        "agentvoca.cleanup.none",
+        "agentvoca.cleanup.openai_compatible",
+        "agentvoca.cleanup.rules",
+        "agentvoca.vision.openai_compatible",
+        "agentvoca.insertion.keyboard",
+        "agentvoca.insertion.clipboard",
+        "agentvoca.observer.ocr.rapidocr",
+        "agentvoca.observer.ocr.none",
+        "agentvoca.observer.ocr.openai_compatible",
+        "agentvoca.observer.compile.rules",
+        "agentvoca.observer.compile.openai_compatible",
+        "agentvoca.observer.compile.none",
         # silero-vad loads models via torch hub; ensure torch is included
         "silero_vad",
         "torch",

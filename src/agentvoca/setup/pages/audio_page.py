@@ -30,13 +30,13 @@ class AudioPage(ConfigPage):
         form.addRow("Input device:", device_row)
 
         self._sample_rate = QtWidgets.QSpinBox()
-        self._sample_rate.setRange(8000, 48000)
-        self._sample_rate.setSingleStep(1000)
+        self._sample_rate.setRange(16000, 16000)
         self._sample_rate.setSuffix(" Hz")
+        self._sample_rate.setToolTip("VAD and ASR require 16 kHz audio.")
         form.addRow("Sample rate:", self._sample_rate)
 
         self._channels = QtWidgets.QSpinBox()
-        self._channels.setRange(1, 2)
+        self._channels.setRange(1, 1)
         form.addRow("Channels:", self._channels)
 
         self._vad = QtWidgets.QCheckBox("Use voice-activity detection (VAD) to auto-stop")
@@ -58,15 +58,18 @@ class AudioPage(ConfigPage):
         layout.addStretch()
 
         self._probe = DeviceProbe()
+        self._devices_loaded = False
 
     def _on_refresh_devices(self) -> None:
         entries = self._probe.refresh()
+        self._devices_loaded = True
         self._device_combo.clear()
         for entry in entries:
             self._device_combo.addItem(entry.label, entry.name)
 
     def load_from_controller(self) -> None:
-        self._on_refresh_devices()
+        if not self._devices_loaded:
+            self._on_refresh_devices()
         c = self.controller.draft
         # Pick current device in the combo if it matches an entry; otherwise
         # surface it as a custom row.

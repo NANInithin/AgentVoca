@@ -108,10 +108,12 @@ class TestValidConfigs:
         os.environ["OPENAI_API_KEY"] = "sk-test-placeholder"
         try:
             data = _load_fixture("valid_full.yaml")
+            data["audio"]["sample_rate"] = 16000
+            data["audio"]["channels"] = 1
             config = load_config_from_dict(data)
             assert config.app.profile == "technical"
             assert config.app.debug is True
-            assert config.audio.sample_rate == 44100
+            assert config.audio.sample_rate == 16000
             assert config.audio.silence_timeout_ms == 500
             assert config.asr.provider == "openai_compatible"
             assert config.asr.endpoint == "https://api.openai.com/v1"
@@ -161,20 +163,24 @@ class TestAudioValidation:
     def test_sample_rate_too_high(self):
         with pytest.raises(ConfigError) as exc:
             AudioConfig(sample_rate=96000)
-        assert "outside the supported range" in str(exc.value)
+        assert "16000 Hz" in str(exc.value)
 
     def test_sample_rate_too_low(self):
         with pytest.raises(ConfigError) as exc:
             AudioConfig(sample_rate=4000)
-        assert "outside the supported range" in str(exc.value)
+        assert "16000 Hz" in str(exc.value)
 
-    def test_sample_rate_valid_edge_high(self):
-        c = AudioConfig(sample_rate=48000)
-        assert c.sample_rate == 48000
+    def test_sample_rate_48k_rejected(self):
+        with pytest.raises(ConfigError, match="16000 Hz"):
+            AudioConfig(sample_rate=48000)
 
-    def test_sample_rate_valid_edge_low(self):
-        c = AudioConfig(sample_rate=8000)
-        assert c.sample_rate == 8000
+    def test_sample_rate_8k_rejected(self):
+        with pytest.raises(ConfigError, match="16000 Hz"):
+            AudioConfig(sample_rate=8000)
+
+    def test_stereo_rejected(self):
+        with pytest.raises(ConfigError, match="mono"):
+            AudioConfig(channels=2)
 
     def test_silence_timeout_zero(self):
         with pytest.raises(ConfigError) as exc:
@@ -194,7 +200,7 @@ class TestAudioValidation:
         data = _load_fixture("invalid_sample_rate.yaml")
         with pytest.raises(ConfigError) as exc:
             load_config_from_dict(data)
-        assert "outside the supported range" in str(exc.value)
+        assert "16000 Hz" in str(exc.value)
 
     def test_invalid_silence_timeout_from_fixture(self):
         data = _load_fixture("invalid_silence_timeout.yaml")
@@ -240,11 +246,19 @@ class TestHotkeyValidation:
         c = HotkeysConfig(toggle_recording="ctrl+7")
         assert c.toggle_recording == "ctrl+7"
 
+    def test_duplicate_bindings_rejected(self):
+        with pytest.raises(ConfigError, match="same binding"):
+            HotkeysConfig(toggle_recording="ctrl+shift+space", open_settings="shift+ctrl+space")
+
 
 # ── Required field validation ──────────────────────────────────────
 
 
 class TestRequiredFields:
+    def test_unknown_asr_provider_rejected_at_load(self):
+        with pytest.raises(ConfigError, match="Unknown asr.provider"):
+            load_config_from_dict({"asr": {"provider": "faster-whisper"}})
+
     def test_missing_asr_provider(self):
         data = _load_fixture("missing_required.yaml")
         with pytest.raises(ConfigError) as exc:

@@ -117,7 +117,7 @@ def load_config_lenient(path: str | Path) -> tuple[FullConfig, str | None]:
     raw = _load_yaml(config_path)
     expanded = _expand_env_vars(raw)
     try:
-        return _validate_and_build(expanded), None
+        return _validate_and_build(expanded, expand=False), None
     except ConfigError as exc:
         # Strict validation failed. The most common reason is a missing
         # API-key env var (the ``_validate_api_key_env`` model-validator),
@@ -157,12 +157,19 @@ def _construct_lenient(expanded: dict[str, Any]) -> FullConfig:
         # set a sentinel value if it isn't already in os.environ. This
         # makes the strict validator see a green light for the duration
         # of this call, without mutating the user's real key.
-        for section in ("asr", "cleanup", "vision"):
-            block = expanded.get(section) or {}
-            env_name = block.get("api_key_env") if isinstance(block, dict) else None
-            if env_name and env_name not in os.environ:
-                os.environ[env_name] = "__lenient_loader_placeholder__"
-                sentinel_keys.append(env_name)
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                env_name = value.get("api_key_env")
+                if isinstance(env_name, str) and env_name and env_name not in os.environ:
+                    os.environ[env_name] = "__lenient_loader_placeholder__"
+                    sentinel_keys.append(env_name)
+                for nested in value.values():
+                    visit(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested)
+
+        visit(expanded)
         return FullConfig.model_validate(expanded, strict=False)
     except Exception:
         from agentvoca.config.schema import ASRConfig  # noqa: PLC0415
@@ -190,7 +197,7 @@ def load_config_from_dict(data: dict[str, Any]) -> FullConfig:
     return _validate_and_build(data)
 
 
-def _validate_and_build(raw: dict[str, Any]) -> FullConfig:
+def _validate_and_build(raw: dict[str, Any], *, expand: bool = True) -> FullConfig:
     """Expand env vars in the raw dict and validate against FullConfig.
 
     Args:
@@ -199,10 +206,38 @@ def _validate_and_build(raw: dict[str, Any]) -> FullConfig:
     Returns:
         Validated FullConfig instance.
     """
-    expanded = _expand_env_vars(raw)
+    expanded = _expand_env_vars(raw) if expand else raw
 
     try:
-        return FullConfig.model_validate(expanded, strict=False)
+        config = FullConfig.model_validate(expanded, strict=False)
+        from agentvoca.core.registry import ProviderRegistry  # noqa: PLC0415
+
+        registry = ProviderRegistry()
+        providers = (
+            ("asr.provider", config.asr.provider, registry._asr),
+            ("cleanup.provider", config.cleanup.provider, registry._cleanup),
+            ("insertion.strategy", config.insertion.strategy, registry._insertion),
+        )
+        optional = []
+        if config.vision.enabled:
+            optional.append(("vision.provider", config.vision.provider, registry._vision))
+        if config.observer.enabled:
+            optional.extend(
+                [
+                    ("observer.ocr.provider", config.observer.ocr.provider, registry._ocr),
+                    (
+                        "observer.compile.provider",
+                        config.observer.compile.provider,
+                        registry._compiler,
+                    ),
+                ]
+            )
+        for field, name, registered in (*providers, *optional):
+            if name not in registered:
+                raise ConfigError(
+                    f"Unknown {field} {name!r}; available: {', '.join(sorted(registered))}."
+                )
+        return config
     except Exception as exc:
         # pydantic ValidationError is the most common case
         from pydantic import ValidationError

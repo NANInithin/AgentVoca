@@ -62,6 +62,8 @@ class StatusOverlay(QtWidgets.QWidget):
     def __init__(self, event_bus: EventBus) -> None:
         super().__init__()
         self._event_bus = event_bus
+        self._current_state = "idle"
+        self._warmup_generation = 0
 
         # Window setup
         self.setWindowFlags(
@@ -143,6 +145,8 @@ class StatusOverlay(QtWidgets.QWidget):
 
     def _apply_state(self, current: str) -> None:
         """Update the state label when the app state changes (GUI thread)."""
+        self._current_state = current
+        self._warmup_generation += 1
         label = _STATE_LABELS.get(current, "")
         self._state_label.setText(label)
 
@@ -190,6 +194,8 @@ class StatusOverlay(QtWidgets.QWidget):
         The overlay briefly shows a ready indicator and auto-hides after
         a short delay.
         """
+        if self._current_state != "idle":
+            return
         if asr_ready and cleanup_ready:
             self._state_label.setText("✓ Ready")
             self._state_label.setStyleSheet("color: #28a745; font-size: 12px; font-weight: bold;")
@@ -202,7 +208,15 @@ class StatusOverlay(QtWidgets.QWidget):
 
         self.show()
         # Auto-hide after 2 seconds via Qt timer
-        QtCore.QTimer.singleShot(2000, self.hide)
+        generation = self._warmup_generation
+        QtCore.QTimer.singleShot(
+            2000,
+            lambda: (
+                self.hide()
+                if self._current_state == "idle" and generation == self._warmup_generation
+                else None
+            ),
+        )
 
     def stop(self) -> None:
         """Clean up subscriptions."""
@@ -249,11 +263,14 @@ class ObserverIndicator(QtWidgets.QWidget):
     # Signals marshal updates from worker threads onto the GUI thread.
     _state_sig = QtCore.Signal(bool)  # paused (True) / recording (False)
     _tick_sig = QtCore.Signal(int)  # elapsed ms
+    _lifecycle_sig = QtCore.Signal(str)
 
     def __init__(self, event_bus: EventBus) -> None:
         super().__init__()
         self._event_bus = event_bus
         self._session_started_monotonic: float = 0.0
+        self._elapsed_before_pause_ms = 0
+        self._paused = False
 
         # Window setup: frameless, always-on-top, no taskbar entry, no
         # focus stealing. ``WindowTransparentForInput`` makes the widget
@@ -286,6 +303,7 @@ class ObserverIndicator(QtWidgets.QWidget):
 
         self._state_sig.connect(self._apply_state)
         self._tick_sig.connect(self._apply_tick)
+        self._lifecycle_sig.connect(self._apply_lifecycle)
         self._event_bus.subscribe(ObserverSessionStartedEvent, self._on_started)
         self._event_bus.subscribe(ObserverSessionEndedEvent, self._on_ended)
         self._event_bus.subscribe(ObserverPausedEvent, self._on_paused)
@@ -311,24 +329,41 @@ class ObserverIndicator(QtWidgets.QWidget):
         self.setGeometry(geometry.left() + 20, geometry.top() + 20, 180, 28)
 
     def _on_started(self, event: object) -> None:
-        self._session_started_monotonic = time.monotonic()
-        self._state_sig.emit(False)  # recording
-        if not self._timer.isActive():
-            self._timer.start()
-        self._tick_sig.emit(0)
+        self._lifecycle_sig.emit("start")
 
     def _on_ended(self, event: object) -> None:
-        self._state_sig.emit(False)  # not paused
-        if self._timer.isActive():
-            self._timer.stop()
-        self._session_started_monotonic = 0.0
+        self._lifecycle_sig.emit("end")
         # The badge is only visible while a session is active; hide
         # ourselves on session end. This is the **only** way the badge
         # gets hidden \u2014 do not add a close button.
-        self.hide()
+        # GUI-thread lifecycle slot hides the widget.
 
     def _on_paused(self, event: object) -> None:
-        self._state_sig.emit(bool(getattr(event, "paused", False)))
+        self._lifecycle_sig.emit("pause" if getattr(event, "paused", False) else "resume")
+
+    def _apply_lifecycle(self, action: str) -> None:
+        if action == "start":
+            self._elapsed_before_pause_ms = 0
+            self._session_started_monotonic = time.monotonic()
+            self._paused = False
+            self._apply_state(False)
+            self._timer.start()
+        elif action == "end":
+            self._timer.stop()
+            self._session_started_monotonic = 0.0
+            self._elapsed_before_pause_ms = 0
+            self._paused = False
+            self.hide()
+        elif action == "pause" and not self._paused:
+            self._elapsed_before_pause_ms = self._elapsed_ms()
+            self._paused = True
+            self._timer.stop()
+            self._apply_state(True)
+        elif action == "resume" and self._paused:
+            self._session_started_monotonic = time.monotonic()
+            self._paused = False
+            self._apply_state(False)
+            self._timer.start()
 
     def _apply_state(self, paused: bool) -> None:
         if paused:
@@ -340,6 +375,8 @@ class ObserverIndicator(QtWidgets.QWidget):
         self.show()
 
     def _apply_tick(self, ms: int) -> None:
+        if self._paused:
+            return
         self._label.setText(f"REC {_fmt_elapsed(ms)}")
         if not self.isVisible():
             self.show()
@@ -349,8 +386,12 @@ class ObserverIndicator(QtWidgets.QWidget):
 
     def _elapsed_ms(self) -> int:
         if not self._session_started_monotonic:
-            return 0
-        return int((time.monotonic() - self._session_started_monotonic) * 1000)
+            return self._elapsed_before_pause_ms
+        if self._paused:
+            return self._elapsed_before_pause_ms
+        return self._elapsed_before_pause_ms + int(
+            (time.monotonic() - self._session_started_monotonic) * 1000
+        )
 
     def stop(self) -> None:
         """Clean up subscriptions."""

@@ -63,10 +63,13 @@ def test_concurrent_insert_and_undo_do_not_interleave(monkeypatch):
         # 100 ms pyautogui call. If the executor were shared but
         # multi-worker, intervals could overlap; with max_workers=1 they
         # must be sequential.
-        await asyncio.gather(
+        insert_result, premature_undo = await asyncio.gather(
             strat.insert("abc"),
             strat.undo_last(),
         )
+        assert insert_result.success
+        assert premature_undo is False
+        assert await strat.undo_last() is True
 
     asyncio.run(run())
 

@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from agentvoca.utils.errors import ConfigError
 
@@ -90,8 +90,15 @@ class AudioConfig(BaseModel):
     @field_validator("sample_rate")
     @classmethod
     def _validate_sample_rate(cls, value: int) -> int:
-        if value < 8000 or value > 48000:
-            raise ConfigError(f"Sample rate {value} is outside the supported range [8000, 48000].")
+        if value != 16000:
+            raise ConfigError("Audio input must use 16000 Hz for VAD and ASR.")
+        return value
+
+    @field_validator("channels")
+    @classmethod
+    def _validate_channels(cls, value: int) -> int:
+        if value != 1:
+            raise ConfigError("Audio input must be mono for VAD and ASR.")
         return value
 
     @field_validator("silence_timeout_ms")
@@ -184,8 +191,8 @@ class HotkeysConfig(BaseModel):
 
     @field_validator("toggle_recording", "open_settings", "cancel")
     @classmethod
-    def _validate_hotkey(cls, value: str) -> str:
-        return _validate_hotkey(value, cls.__name__)
+    def _validate_hotkey(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_hotkey(value, info.field_name)
 
     @field_validator(
         "insert_last_transcript",
@@ -195,10 +202,22 @@ class HotkeysConfig(BaseModel):
         "pause_observer",
     )
     @classmethod
-    def _validate_optional_hotkey(cls, value: Optional[str]) -> Optional[str]:
+    def _validate_optional_hotkey(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
         if value is not None:
-            _validate_hotkey(value, "insert_last_transcript")
+            _validate_hotkey(value, info.field_name)
         return value
+
+    @model_validator(mode="after")
+    def _unique_bindings(self) -> "HotkeysConfig":
+        seen: dict[tuple[str, ...], str] = {}
+        for action, binding in self.model_dump().items():
+            if not binding:
+                continue
+            normalized = tuple(sorted(part.lower() for part in binding.split("+")))
+            if normalized in seen:
+                raise ConfigError(f"Hotkeys {seen[normalized]} and {action} use the same binding.")
+            seen[normalized] = action
+        return self
 
 
 class VocabularyConfig(BaseModel):
@@ -212,6 +231,7 @@ class SnippetsConfig(BaseModel):
     """Snippet expansion settings."""
 
     path: Optional[str] = None  # path to snippets.yaml
+    inline: dict[str, str] = Field(default_factory=dict)
 
 
 class ContextConfig(BaseModel):
@@ -222,12 +242,28 @@ class ContextConfig(BaseModel):
     read_clipboard: bool = False
     profiles: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("read_screen", "read_clipboard")
+    @classmethod
+    def _reject_unimplemented_readers(cls, value: bool) -> bool:
+        if value:
+            raise ConfigError("Screen and clipboard context readers are not available.")
+        return value
+
 
 class CommandsConfig(BaseModel):
     """Voice commands configuration (v2)."""
 
     enabled: bool = False
     phrases: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("phrases")
+    @classmethod
+    def _validate_phrases(cls, value: dict[str, str]) -> dict[str, str]:
+        actions = {"newline", "paragraph", "delete_last", "undo", "capitalize"}
+        invalid = set(value.values()) - actions
+        if invalid:
+            raise ConfigError(f"Unknown command actions: {sorted(invalid)}")
+        return value
 
 
 class AdaptiveConfig(BaseModel):
@@ -426,13 +462,12 @@ class ObserverSelectionConfig(BaseModel):
     """Highlighted-text capture configuration.
 
     ``method == "uia"`` uses Windows UI Automation ``TextPattern``
-    (read-only, never touches the clipboard). ``"ocr_rect"`` falls back to
-    OCR over the active selection rectangle. ``"none"`` disables selection
+    (read-only, never touches the clipboard). ``"none"`` disables selection
     capture entirely (e.g. on macOS where UIA is unavailable).
     """
 
     enabled: bool = True
-    method: Literal["uia", "ocr_rect", "none"] = "uia"
+    method: Literal["uia", "none"] = "uia"
     max_chars: int = 4000
 
     @field_validator("max_chars")
@@ -447,9 +482,7 @@ class ObserverCompileConfig(BaseModel):
     """Session compiler configuration.
 
     ``provider == "rules"`` is the zero-config default (no API key
-    required). ``output_dir`` is stored as written; when left at its
-    default sentinel the model validator resolves it to
-    ``<observer.storage.dir>/exports``.
+    required). An empty ``output_dir`` follows the storage directory.
     """
 
     provider: str = "rules"
@@ -457,7 +490,7 @@ class ObserverCompileConfig(BaseModel):
     api_key_env: Optional[str] = None
     model: Optional[str] = None
     formats: list[str] = Field(default_factory=lambda: ["markdown", "json"])
-    output_dir: str = ""  # resolved by ObserverConfig._resolve_output_dir
+    output_dir: str = ""
 
     @field_validator("formats")
     @classmethod
@@ -506,18 +539,13 @@ class ObserverConfig(BaseModel):
     compile: ObserverCompileConfig = Field(default_factory=ObserverCompileConfig)
     privacy: ObserverPrivacyConfig = Field(default_factory=ObserverPrivacyConfig)
 
-    @model_validator(mode="after")
-    def _resolve_output_dir(self) -> "ObserverConfig":
-        """Resolve ``compile.output_dir`` against ``storage.dir`` when empty.
-
-        The empty string is a sentinel for "use the default"; storing the
-        resolved value here means downstream code can use it verbatim
-        without re-implementing the resolution rule.
-        """
-        if self.compile.output_dir == "":
-            base = self.storage.dir.rstrip("/").rstrip("\\")
-            self.compile.output_dir = f"{base}/exports"
-        return self
+    @property
+    def resolved_output_dir(self) -> str:
+        """Return the explicit output directory or the storage-relative default."""
+        if self.compile.output_dir:
+            return self.compile.output_dir
+        base = self.storage.dir.rstrip("/").rstrip("\\")
+        return f"{base}/exports"
 
 
 class FullConfig(BaseModel):

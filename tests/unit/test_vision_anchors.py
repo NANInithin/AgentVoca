@@ -38,6 +38,21 @@ def test_multiple_anchors_map_in_order() -> None:
     assert out.index("ONE") < out.index("TWO")
 
 
+def test_failed_first_extraction_does_not_shift_second_anchor() -> None:
+    sp = AnchorSplicer()
+    out, matched = sp.splice("this screenshot then the attached image", [None, "TWO"])
+    assert matched == 1
+    assert "this screenshot" in out
+    assert "the attached image" not in out
+    assert "TWO" in out
+
+
+def test_splice_preserves_blank_lines_inside_code() -> None:
+    code = "def first():\n    pass\n\n\ndef second():\n    pass"
+    out, _ = AnchorSplicer().splice("this screenshot", [code])
+    assert code in out
+
+
 def test_more_extractions_than_anchors_appends_leftover() -> None:
     sp = AnchorSplicer()
     out, n = sp.splice("only this screenshot here", ["ONE", "TWO", "THREE"])

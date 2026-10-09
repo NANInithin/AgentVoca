@@ -30,7 +30,9 @@ Lifecycle (Track 1 implements; T2/T3 fill the bodies they own):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -83,6 +85,36 @@ class ObserverController:
         self._compiler: "SessionCompiler | None" = None
         self._exporters: list[object] | None = None
         self._indicator: object | None = None
+        self._lifecycle_lock = threading.RLock()
+        self._future_lock = threading.Lock()
+        self._ocr_futures: set[concurrent.futures.Future] = set()
+        self._compile_futures: set[concurrent.futures.Future] = set()
+        self._loop_tasks: set[asyncio.Task] = set()
+        self._closed_ocr_sessions: set[int] = set()
+
+    def track_ocr_future(self, future: concurrent.futures.Future) -> None:
+        """Include OCR work in the session-stop export barrier."""
+        with self._future_lock:
+            self._ocr_futures.add(future)
+        future.add_done_callback(self._discard_ocr_future)
+
+    def _discard_ocr_future(self, future: concurrent.futures.Future) -> None:
+        with self._future_lock:
+            self._ocr_futures.discard(future)
+
+    def cancel_ocr_futures(self) -> None:
+        """Stop queued and in-flight OCR when the foreground becomes excluded."""
+        with self._future_lock:
+            pending = tuple(self._ocr_futures)
+        for future in pending:
+            future.cancel()
+
+    def accepts_ocr(self, session_id: int) -> bool:
+        return (
+            self.is_active
+            and self._sessions.current.id == session_id
+            and (session_id not in self._closed_ocr_sessions)
+        )
 
     # ── Track 2 hands its objects over here ─────────────────────────
     def attach_capture(
@@ -135,6 +167,10 @@ class ObserverController:
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start_session(self) -> bool:
+        with self._lifecycle_lock:
+            return self._start_session_locked()
+
+    def _start_session_locked(self) -> bool:
         """Open a session and start capture.
 
         Returns:
@@ -180,6 +216,10 @@ class ObserverController:
         return True
 
     def stop_session(self) -> None:
+        with self._lifecycle_lock:
+            self._stop_session_locked()
+
+    def _stop_session_locked(self) -> None:
         """Close the session and schedule compilation on the loop thread."""
         if not self.is_active:
             return
@@ -201,6 +241,26 @@ class ObserverController:
                     stop()
                 except Exception:
                     logger.exception("Observer capture %s.stop() raised; continuing", label)
+        with self._future_lock:
+            pending_ocr = set(self._ocr_futures)
+        if pending_ocr:
+            try:
+                on_loop = asyncio.get_running_loop() is self._loop
+            except RuntimeError:
+                on_loop = False
+            _, incomplete = (
+                (set(), pending_ocr)
+                if on_loop
+                else concurrent.futures.wait(pending_ocr, timeout=3.0)
+            )
+            if incomplete:
+                self._closed_ocr_sessions.add(session_id)
+                for future in incomplete:
+                    future.cancel()
+                self._sessions.record(
+                    "gap", meta={"reason": "ocr_incomplete", "dropped": len(incomplete)}
+                )
+        self._closed_ocr_sessions.add(session_id)
         closed = self._sessions.close()
         if closed is None:
             return
@@ -228,15 +288,24 @@ class ObserverController:
 
     def _schedule_compile(self, session_id: int) -> None:
         """Schedule the compile coroutine on the asyncio loop thread."""
+        coroutine = self._run_compile(session_id=session_id)
         try:
-            asyncio.run_coroutine_threadsafe(self._run_compile(session_id=session_id), self._loop)
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+            with self._future_lock:
+                self._compile_futures.add(future)
+            future.add_done_callback(self._discard_compile_future)
         except RuntimeError:
+            coroutine.close()
             # Loop is closed. Log and move on; the session is closed
             # regardless, the user can recompile later.
             logger.warning(
                 "ObserverController: could not schedule compile for session %d (loop closed)",
                 session_id,
             )
+
+    def _discard_compile_future(self, future: concurrent.futures.Future) -> None:
+        with self._future_lock:
+            self._compile_futures.discard(future)
 
     def _await_on_loop(self, coro, *, label: str, timeout: float = 2.0) -> None:
         """Run ``coro`` to completion on the loop thread, from this thread.
@@ -267,7 +336,9 @@ class ObserverController:
             # here would deadlock the loop that has to run it, so hand
             # the coroutine to the loop and return. The caller could not
             # have waited synchronously in this situation anyway.
-            self._loop.create_task(coro)
+            task = self._loop.create_task(coro)
+            self._loop_tasks.add(task)
+            task.add_done_callback(self._loop_tasks.discard)
             logger.debug("Observer %s.shutdown() scheduled on the running loop", label)
             return
         try:
@@ -292,8 +363,8 @@ class ObserverController:
         """
         assert self._compiler is not None
         started = int(time.time() * 1000)
-        bundle = self._store.load_bundle(session_id=session_id)
         try:
+            bundle = await asyncio.to_thread(self._store.load_bundle, session_id=session_id)
             compiled = await self._compiler.compile(bundle)
         except Exception:
             logger.exception(
@@ -302,7 +373,7 @@ class ObserverController:
             )
             self._event_bus.publish(
                 ObserverCompiledEvent(
-                    session_uuid=bundle.session.uuid,
+                    session_uuid=bundle.session.uuid if "bundle" in locals() else "",
                     markdown_path="",
                     json_path=None,
                     degraded=True,
@@ -340,7 +411,7 @@ class ObserverController:
         latency_ms = int(time.time() * 1000) - started
         # Only mark the session 'compiled' if at least one output was produced.
         if markdown_path or json_path:
-            self._store.mark_compiled(session_id=session_id)
+            await asyncio.to_thread(self._store.mark_compiled, session_id=session_id)
         self._event_bus.publish(
             ObserverCompiledEvent(
                 session_uuid=bundle.session.uuid,
@@ -353,21 +424,24 @@ class ObserverController:
 
     def toggle_session(self) -> None:
         """Hotkey/tray entry point."""
-        if self.is_active:
-            self.stop_session()
-        else:
-            self.start_session()
+        with self._lifecycle_lock:
+            if self.is_active:
+                self._stop_session_locked()
+            else:
+                self._start_session_locked()
 
     def pause(self, reason: str = "hotkey") -> None:
         """Suspend capture."""
-        if not self._sessions.pause(reason=reason):
-            return
+        with self._lifecycle_lock:
+            if not self._sessions.pause(reason=reason):
+                return
         self._event_bus.publish(ObserverPausedEvent(paused=True, reason=reason))
 
     def resume(self, reason: str = "hotkey") -> None:
         """Resume capture."""
-        if not self._sessions.resume(reason=reason):
-            return
+        with self._lifecycle_lock:
+            if not self._sessions.resume(reason=reason):
+                return
         self._event_bus.publish(ObserverPausedEvent(paused=False, reason=reason))
 
     @property
@@ -391,29 +465,25 @@ class ObserverController:
         was ever opened.
         """
         if self.is_active:
-            # Use the same path as stop_session but without scheduling
-            # compile (the loop may already be closing).
-            for label, obj in (
-                ("ambient", self._ambient),
-                ("triggers", self._triggers),
-                ("grabber", self._grabber),
-                ("ocr", self._ocr),
-                ("selection", self._selection),
-            ):
-                stop = getattr(obj, "stop", None) if obj is not None else None
-                if callable(stop):
-                    try:
-                        stop()
-                    except Exception:
-                        logger.exception(
-                            "Observer capture %s.stop() raised during shutdown; continuing",
-                            label,
-                        )
-            self._sessions.close()
+            self.stop_session()
+        with self._future_lock:
+            compiles = set(self._compile_futures)
+        if compiles:
+            _, incomplete = concurrent.futures.wait(compiles, timeout=15.0)
+            for future in incomplete:
+                logger.warning("Observer compile did not finish before shutdown")
+                future.cancel()
+        with self._future_lock:
+            ocr_work = set(self._ocr_futures)
+        if ocr_work:
+            _, incomplete = concurrent.futures.wait(ocr_work, timeout=5.0)
+            for future in incomplete:
+                future.cancel()
         # Stop attached surface subsystems too (indicator, compiler
         # warm-up connection, etc). The soft-contract pattern means
         # these are no-ops before Track 3 lands.
         for label, obj in (
+            ("ocr", self._ocr),
             ("compiler", self._compiler),
             ("indicator", self._indicator),
         ):

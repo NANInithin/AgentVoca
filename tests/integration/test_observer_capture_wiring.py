@@ -22,8 +22,11 @@ in the store.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -43,11 +46,58 @@ from agentvoca.config.schema import (
 )
 from agentvoca.core.async_loop import AsyncLoopThread
 from agentvoca.core.event_bus import EventBus
+from agentvoca.core.events import ObserverUtteranceEvent
 from agentvoca.core.types import TranscriptSegment
 from agentvoca.observer.controller import ObserverController
 from agentvoca.observer.models import OCRResult
 from agentvoca.observer.ocr.base import OCRProvider
 from agentvoca.observer.store import ObserverStore
+
+
+def test_dictated_event_reaches_db_and_sidecar(tmp_path, loop_thread, store):
+    cfg = _config(tmp_path)
+    bus = EventBus()
+    controller, _capture, _audio = _build(
+        cfg,
+        loop_thread,
+        store,
+        orchestrator=_StubOrchestrator(),
+        registry=_StubRegistry(None),
+        event_bus=bus,
+    )
+    try:
+        session = controller.sessions.open(app_version="test")
+        bus.publish(
+            ObserverUtteranceEvent(
+                text="dictated words",
+                source="dictated",
+                duration_ms=1200,
+                session_id=session.id,
+            )
+        )
+        assert store.flush(timeout=2.0)
+        controller.sessions.close()
+        bundle = store.load_bundle(session.id)
+        rows = [event for event in bundle.events if event.kind == "utterance_dictated"]
+        assert len(rows) == 1
+        assert rows[0].text == "dictated words"
+
+        from agentvoca.observer.compile.rules import RulesCompiler
+        from agentvoca.observer.export.json_sidecar import JsonExporter
+
+        compiled = asyncio.run(RulesCompiler(cfg.observer.compile).compile(bundle))
+        path = asyncio.run(JsonExporter(bundle, tmp_path).export(compiled))
+        sidecar = json.loads(Path(path).read_text(encoding="utf-8"))
+        utterances = [u for block in sidecar["blocks"] for u in block["utterances"]]
+        assert utterances == [
+            {
+                "ts_ms": rows[0].ts_ms,
+                "text": "dictated words",
+                "source": "dictated",
+            }
+        ]
+    finally:
+        controller.shutdown()
 
 
 class _StubASR:
@@ -341,7 +391,7 @@ def test_excluded_foreground_app_blocks_capture_and_records_the_pause(
     pauses = [e for e in bundle.events if e.kind == "pause_start"]
     assert pauses, "an excluded app must record pause_start"
     assert pauses[0].meta["reason"] == "excluded_app"
-    assert pauses[0].meta["pattern"] == "secret.exe"
+    assert "pattern" not in pauses[0].meta
     # The excluded app's window title must not be archived.
     assert pauses[0].window_title is None
     controller.shutdown()

@@ -260,15 +260,18 @@ class TestAutoStopStillFires:
                 # The silence timeout is wall-clock: real time must exceed
                 # silence_timeout_ms (900) before the callback's check trips.
                 await asyncio.sleep(1.0)
-                for _ in range(3):
+                capt._audio_callback(_make_indata(), 1024, None, None)
+                assert not stopped_at  # a stale silence result must not stop the recording
+                for _ in range(150):
                     capt._audio_callback(_make_indata(), 1024, None, None)
                     if stopped_at:
                         break
+                    await asyncio.sleep(0.01)
 
                 assert stopped_at, "auto-stop never fired"
                 elapsed = stopped_at[0] - t0
                 # Bound: flip detection (~0.2 s) + timeout wait (1.0 s) + slack.
-                assert elapsed < 3.0, f"auto-stop fired after {elapsed:.2f}s"
+                assert elapsed < 4.0, f"auto-stop fired after {elapsed:.2f}s"
 
                 capt.stop()
         finally:

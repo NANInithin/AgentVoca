@@ -14,7 +14,9 @@ when streaming is disabled.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, AsyncIterator, Optional
 
@@ -117,10 +119,12 @@ class Orchestrator:
         # Background task tracking
         self._running = False
         self._error_timer_task: Optional[asyncio.Task[None]] = None
+        self._warmup_task: Optional[asyncio.Task[None]] = None
 
         # Pipeline state (v1 batch path)
         self._current_audio_bytes: Optional[bytes] = None
         self._current_sample_rate: int = 0
+        self._current_stream_overflowed = False
         self._current_transcript: Optional[str] = None
         self._cleanup_success: bool = False
 
@@ -173,6 +177,7 @@ class Orchestrator:
         # Duration of the current dictation, used by the Observer
         # dictated-utterance hook. Set in _on_recording_stopped.
         self._current_duration_ms: int = 0
+        self._observer_session_id: int | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -207,11 +212,9 @@ class Orchestrator:
         self._streaming_enabled = self._asr_provider.supports_streaming()
 
         # v2: detect pipelined cleanup eligibility (WB-04)
-        self._pipelined_cleanup_enabled = (
-            self._streaming_enabled
-            and self._config.cleanup.streaming
-            and self._config.cleanup.style != "technical"
-        )
+        # Current ASR providers emit only a complete final transcript. There
+        # are no incremental final spans to clean ahead of recording stop.
+        self._pipelined_cleanup_enabled = False
 
         # Register event bus subscriptions
         self._event_bus.subscribe(RecordingStoppedEvent, self._on_recording_stopped)
@@ -255,7 +258,7 @@ class Orchestrator:
 
         # v2: background warm-up
         if self._config.asr.warm_up:
-            asyncio.create_task(self._run_warmup())
+            self._warmup_task = asyncio.create_task(self._run_warmup())
 
         self._running = True
         logger.info(
@@ -271,6 +274,14 @@ class Orchestrator:
         """Clean up resources and stop all background tasks."""
         logger.info("Orchestrator stopping…")
         self._running = False
+        if self._warmup_task is not None and not self._warmup_task.done():
+            self._warmup_task.cancel()
+            await asyncio.gather(self._warmup_task, return_exceptions=True)
+        self._warmup_task = None
+        if self._pipeline_task is not None and not self._pipeline_task.done():
+            self._pipeline_task.cancel()
+            await asyncio.gather(self._pipeline_task, return_exceptions=True)
+            self._pipeline_task = None
 
         # Cancel streaming task if active
         self._cancel_streaming_task()
@@ -339,9 +350,9 @@ class Orchestrator:
                     len(learned_mappings),
                 )
 
-        if snippet_cfg.path:
+        if snippet_cfg.path or snippet_cfg.inline:
             try:
-                self._snippets = SnippetExpander(path=snippet_cfg.path)
+                self._snippets = SnippetExpander(path=snippet_cfg.path, snippets=snippet_cfg.inline)
                 logger.info("Snippets loaded (%d triggers)", len(self._snippets.mapping))
             except Exception:
                 logger.exception("Failed to load snippets")
@@ -417,6 +428,20 @@ class Orchestrator:
     def get_last_transcript(self) -> Optional[str]:
         """Return the most recently inserted transcript, or None."""
         return self._last_transcript
+
+    async def insert_last_transcript(self) -> bool:
+        """Replay the last successful dictation through the insertion strategy."""
+        if not self._last_transcript or self._insertion_strategy is None:
+            return False
+        result = await self._insertion_strategy.insert(self._last_transcript)
+        self._event_bus.publish(
+            InsertionCompleteEvent(
+                success=result.success,
+                method_used=result.method_used,
+                error=result.error,
+            )
+        )
+        return result.success
 
     async def undo_last_insertion(self) -> bool:
         """Undo the most recently inserted text by sending Ctrl+Z / Cmd+Z.
@@ -569,9 +594,15 @@ class Orchestrator:
         v0.4.0: ``event.duration_ms`` is stashed for the
         ``ObserverUtteranceEvent`` published after a successful insertion.
         """
+        prior_pipeline = self._pipeline_task
+        if prior_pipeline is not None and not prior_pipeline.done():
+            prior_pipeline.cancel()
+            await asyncio.gather(prior_pipeline, return_exceptions=True)
+
         self._current_audio_bytes = event.audio_bytes
         self._current_sample_rate = event.sample_rate
         self._current_duration_ms = event.duration_ms
+        self._current_stream_overflowed = event.stream_overflowed
 
         # Drive the state machine forward from its current position.
         if self._state_machine.state == "idle":
@@ -586,13 +617,15 @@ class Orchestrator:
             if result.transitioned:
                 self._emit_state_change("recording", result.new_state)
 
-        self._pipeline_task = asyncio.create_task(self._run_pipeline())
+        pipeline = asyncio.create_task(self._run_pipeline())
+        self._pipeline_task = pipeline
         try:
-            await self._pipeline_task
+            await pipeline
         except asyncio.CancelledError:
             logger.info("Pipeline cancelled by user")
         finally:
-            self._pipeline_task = None
+            if self._pipeline_task is pipeline:
+                self._pipeline_task = None
 
     # ── Pipeline ─────────────────────────────────────────────────────
 
@@ -613,7 +646,7 @@ class Orchestrator:
                 await self._stream_final_event.wait()
                 self._stream_final_event.clear()
 
-                if self._stream_final_segment is not None:
+                if self._stream_final_segment is not None and not self._current_stream_overflowed:
                     text = self._stream_final_segment.text
                     self._current_transcript = text
                     self._event_bus.publish(TranscriptEvent(text=text, is_final=True))
@@ -642,7 +675,7 @@ class Orchestrator:
                         # The spec says "on the final transcript".
 
                         # Step 1.5: Commands and Adaptive Vocab
-                        should_stop, text = self._process_commands_and_adaptive(text)
+                        should_stop, text = await self._process_commands_and_adaptive(text)
                         if should_stop:
                             return
 
@@ -656,20 +689,22 @@ class Orchestrator:
                         # Apply vocabulary + snippets on top
                         corrected_text = self._apply_vocabulary(cleaned_text)
                         expanded_text = self._expand_snippets(corrected_text)
+                        self._check_for_correction(expanded_text)
                         await self._run_insertion(expanded_text)
                         return
                 else:
-                    # No final segment = error path
-                    logger.warning("Streaming produced no final segment, falling back to batch")
-                    await self._run_asr()
+                    logger.warning("Streaming result unavailable or incomplete; using batch ASR")
+                    if not await self._run_asr():
+                        return
             else:
                 # v1 batch path
-                await self._run_asr()
+                if not await self._run_asr():
+                    return
 
             text = self._current_transcript or ""
 
             # Step 1.5: Commands and Adaptive Vocab
-            should_stop, text = self._process_commands_and_adaptive(text)
+            should_stop, text = await self._process_commands_and_adaptive(text)
             if should_stop:
                 return
 
@@ -687,6 +722,7 @@ class Orchestrator:
             cleaned_text = await self._run_cleanup(expanded_text, force_preserve_code=had_vision)
 
             # Step 5: Insertion
+            self._check_for_correction(cleaned_text)
             await self._run_insertion(cleaned_text)
 
         except Exception:
@@ -698,19 +734,21 @@ class Orchestrator:
             # streaming dictation would hang forever on _stream_final_event.
             self._reset_streaming_state()
 
-    def _process_commands_and_adaptive(self, text: str) -> tuple[bool, str]:
+    async def _process_commands_and_adaptive(self, text: str) -> tuple[bool, str]:
         """Check for voice commands and adaptive vocabulary corrections.
 
         Returns:
             (should_stop_pipeline, text_to_continue_with)
         """
-        # Adaptive vocab correction check
-        self._check_for_correction(text)
-
         # Voice commands
-        return self._run_commands(text)
+        should_stop, remainder = await self._run_commands(text)
+        if should_stop:
+            previous = self._state_machine.state
+            self._state_machine.reset("idle")
+            self._emit_state_change(previous, "idle")
+        return should_stop, remainder
 
-    def _run_commands(self, transcript: str) -> tuple[bool, str]:
+    async def _run_commands(self, transcript: str) -> tuple[bool, str]:
         """Run command processor on the transcript.
 
         Returns (should_stop_pipeline, remaining_text).
@@ -728,16 +766,16 @@ class Orchestrator:
         logger.info("Voice command recognized: %s", result.action)
 
         if result.action == "newline":
-            asyncio.create_task(self._insertion_strategy.insert("\n"))  # type: ignore
+            await self._insertion_strategy.insert("\n")  # type: ignore
         elif result.action == "paragraph":
-            asyncio.create_task(self._insertion_strategy.insert("\n\n"))  # type: ignore
+            await self._insertion_strategy.insert("\n\n")  # type: ignore
         elif result.action in ("delete_last", "undo"):
-            asyncio.create_task(self.undo_last_insertion())
+            await self.undo_last_insertion()
         elif result.action == "capitalize":
             if result.remaining_text:
                 return False, result.remaining_text.capitalize()
             elif self._last_transcript:
-                asyncio.create_task(self._redo_capitalized(self._last_transcript))
+                await self._redo_capitalized(self._last_transcript)
                 return True, ""
 
         if result.remaining_text:
@@ -765,14 +803,38 @@ class Orchestrator:
             self._potential_wrong_term = None
             return
 
-        wrong = self._potential_wrong_term
-        right = transcript.strip()
+        wrong_text = self._potential_wrong_term
+        right_text = transcript.strip()
 
-        if wrong.lower() == right.lower():
+        if wrong_text.lower() == right_text.lower():
             # Same text re-dictated — not a real correction, clear and move on.
             logger.debug("Adaptive: same text re-dictated, not a correction")
             self._potential_wrong_term = None
             return
+
+        wrong_words = re.findall(r"[\w'-]+", wrong_text)
+        right_words = re.findall(r"[\w'-]+", right_text)
+        changes = [
+            (tag, a0, a1, b0, b1)
+            for tag, a0, a1, b0, b1 in difflib.SequenceMatcher(
+                None, [w.lower() for w in wrong_words], [w.lower() for w in right_words]
+            ).get_opcodes()
+            if tag != "equal"
+        ]
+        if len(changes) != 1 or changes[0][0] != "replace":
+            self._potential_wrong_term = None
+            return
+        _, a0, a1, b0, b1 = changes[0]
+        if (
+            a1 - a0 > 2
+            or b1 - b0 > 2
+            or not (a0 or a1 < len(wrong_words))
+            and (len(wrong_words) > 1 or len(right_words) > 1)
+        ):
+            self._potential_wrong_term = None
+            return
+        wrong = " ".join(wrong_words[a0:a1])
+        right = " ".join(right_words[b0:b1])
 
         logger.info(
             "Adaptive: recording correction '%s' → '%s' (%.1f s elapsed)", wrong, right, elapsed
@@ -790,7 +852,7 @@ class Orchestrator:
 
     # ── Pipeline Steps ───────────────────────────────────────────────
 
-    async def _run_asr(self) -> None:
+    async def _run_asr(self) -> bool:
         """Transcribe the captured audio with retry logic (§6.3).
 
         Uses the v1 batch path (``transcribe_audio``). The streaming path
@@ -828,7 +890,7 @@ class Orchestrator:
                 if result.transitioned:
                     self._emit_state_change("transcribing", result.new_state)
 
-                return
+                return True
 
             except ASRError as exc:
                 last_error = exc
@@ -838,7 +900,10 @@ class Orchestrator:
 
         # All retries exhausted
         logger.error("ASR failed after %d attempts", 1 + _ASR_RETRIES)
+        previous_state = self._state_machine.state
         self._state_machine.transition("ErrorEvent", retries_exhausted=True, stage="asr")
+        if self._state_machine.state == "error":
+            self._emit_state_change(previous_state, "error")
         self._emit_error(
             stage="asr",
             message=f"Transcription failed after {1 + _ASR_RETRIES} attempts. "
@@ -846,6 +911,7 @@ class Orchestrator:
             recoverable=False,
             detail=str(last_error) if last_error else None,
         )
+        return False
 
     async def _run_cleanup(self, transcript: str, force_preserve_code: bool = False) -> str:
         """Clean the transcript with retry logic (§6.3).
@@ -931,22 +997,25 @@ class Orchestrator:
             # so the orchestrator stays ignorant of Observer.
             self._event_bus.publish(
                 ObserverUtteranceEvent(
-                    text=text, source="dictated", duration_ms=self._current_duration_ms
+                    text=text,
+                    source="dictated",
+                    duration_ms=self._current_duration_ms,
+                    session_id=self._observer_session_id,
                 )
             )
             self._state_machine.transition("InsertionCompleteEvent", success=True)
             self._emit_state_change(current_state, "idle")
             return
 
-        if self._config.insertion.clipboard_fallback:
+        if self._config.insertion.clipboard_fallback and not getattr(
+            self._insertion_strategy, "partial_failure", False
+        ):
             logger.info("Keyboard insertion failed; falling back to clipboard (%s)", result.error)
             t1 = time.perf_counter()
 
             self._event_bus.publish(
                 InsertionCompleteEvent(success=False, method_used="keyboard", error=result.error)
             )
-            await self._insertion_strategy.undo_last()
-
             clipboard_result = await self._try_clipboard_insert(text)
             elapsed_clipboard_ms = int((time.perf_counter() - t1) * 1000)
             self._event_bus.publish(
@@ -957,6 +1026,14 @@ class Orchestrator:
                 self._last_transcript = text
                 self._event_bus.publish(
                     InsertionCompleteEvent(success=True, method_used="clipboard")
+                )
+                self._event_bus.publish(
+                    ObserverUtteranceEvent(
+                        text=text,
+                        source="dictated",
+                        duration_ms=self._current_duration_ms,
+                        session_id=self._observer_session_id,
+                    )
                 )
                 self._state_machine.transition(
                     "InsertionCompleteEvent", success=False, clipboard_fallback=True
@@ -1029,10 +1106,16 @@ class Orchestrator:
 
         segment_index = 0
         try:
-            async for segment in self._asr_provider.stream_transcribe(
-                audio_chunk_iter(),
-                sample_rate=self._current_sample_rate,
-            ):
+            stream = (
+                self._asr_arbiter.stream_priority(
+                    audio_chunk_iter(), sample_rate=self._current_sample_rate
+                )
+                if self._asr_arbiter is not None
+                else self._asr_provider.stream_transcribe(
+                    audio_chunk_iter(), sample_rate=self._current_sample_rate
+                )
+            )
+            async for segment in stream:
                 # CX-04: Feed detected language to language resolver
                 if segment.language_detected and self._language_resolver is not None:
                     self._language_resolver.update(segment.language_detected)
@@ -1042,6 +1125,7 @@ class Orchestrator:
                     self._event_bus.publish(
                         SegmentFinalizedEvent(text=segment.text, index=segment_index)
                     )
+                    segment_index += 1
                 else:
                     # Publish partial transcript for live overlay
                     self._event_bus.publish(PartialTranscriptEvent(text=segment.text))
@@ -1081,13 +1165,16 @@ class Orchestrator:
             except asyncio.QueueEmpty:
                 break
 
-    def prepare_for_recording(self) -> None:
+    def prepare_for_recording(self, observer_session_id: int | None = None) -> None:
         """Reset streaming state at the start of a new recording.
 
         Called (scheduled on the loop) when recording starts so that a prior
         cancelled or completed streaming session cannot leak stale state into
         the next dictation.
         """
+        if self._pipeline_task is not None and not self._pipeline_task.done():
+            self._pipeline_task.cancel()
+        self._observer_session_id = observer_session_id
         self._reset_streaming_state()
         # v3: drop any screenshots left over from a prior/cancelled session.
         if self._screenshot_capturer is not None:
@@ -1190,7 +1277,7 @@ class Orchestrator:
         if not extractions:
             return text, False
 
-        spliced, anchors_matched = self._anchor_splicer.splice(text, extractions)
+        spliced, anchors_matched = self._anchor_splicer.splice(text, results)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         self._event_bus.publish(TimingEvent(stage="vision", duration_ms=elapsed_ms))
         self._event_bus.publish(
@@ -1230,6 +1317,10 @@ class Orchestrator:
 
     def _transition_or_emit_error(self, stage: str, message: str, recoverable: bool) -> None:
         """Emit an error and transition state in one call."""
+        if not recoverable and self._state_machine.state != "error":
+            previous = self._state_machine.state
+            self._state_machine.reset("error")
+            self._emit_state_change(previous, "error")
         self._emit_error(stage=stage, message=message, recoverable=recoverable)
 
     def _schedule_error_timeout(self) -> None:
@@ -1266,10 +1357,10 @@ class Orchestrator:
         Args:
             new_config: The freshly-saved config.
         """
-        from agentvoca.setup.controllers.restart_policy import is_hot_field  # noqa: PLC0415
+        old_config = self._config
 
         # ── Vocabulary: rebuild the in-memory dictionary ────────────────
-        if is_hot_field("vocabulary.path") or is_hot_field("vocabulary.inline"):
+        if old_config.vocabulary != new_config.vocabulary:
             try:
                 self._vocab = VocabularyDictionary(
                     path=new_config.vocabulary.path,
@@ -1284,27 +1375,17 @@ class Orchestrator:
                 logger.exception("Failed to reload vocabulary; keeping old one")
 
         # ── Snippets: rebuild the expander ──────────────────────────────
-        if is_hot_field("snippets.path"):
+        if old_config.snippets != new_config.snippets:
             try:
-                self._snippets = SnippetExpander(path=new_config.snippets.path)
+                self._snippets = SnippetExpander(
+                    path=new_config.snippets.path, snippets=new_config.snippets.inline
+                )
                 logger.info("Snippets reloaded (%d triggers)", len(self._snippets.mapping))
             except Exception:
                 logger.exception("Failed to reload snippets; keeping old ones")
 
         # ── Cleanup provider: re-instantiate ───────────────────────────
-        if any(
-            is_hot_field(f)
-            for f in (
-                "cleanup.provider",
-                "cleanup.model",
-                "cleanup.endpoint",
-                "cleanup.api_key_env",
-                "cleanup.style",
-                "cleanup.preserve_code",
-                "cleanup.custom_prompt_path",
-                "cleanup.warm_up",
-            )
-        ):
+        if old_config.cleanup != new_config.cleanup:
             try:
                 # R8: close the old provider's pooled HTTP client before
                 # dropping the reference. Soft contract — only providers
@@ -1335,26 +1416,35 @@ class Orchestrator:
         # ── Adaptive / context / commands / vision: mostly lazy, but
         # replace the command processor and adaptive store eagerly so any
         # newly-loaded phrases/mappings take effect on the next dictation.
-        if is_hot_field("commands.enabled") or is_hot_field("commands.phrases"):
-            self._command_processor = DefaultCommandProcessor(
-                phrase_overrides=new_config.commands.phrases
+        if old_config.commands != new_config.commands:
+            self._command_processor = (
+                DefaultCommandProcessor(phrase_overrides=new_config.commands.phrases)
+                if new_config.commands.enabled
+                else None
             )
 
-        if (
-            is_hot_field("adaptive.enabled")
-            or is_hot_field("adaptive.promote_threshold")
-            or is_hot_field("adaptive.learned_vocab_path")
-        ):
-            self._adaptive_store = AdaptiveStore(
-                learned_vocab_path=new_config.adaptive.learned_vocab_path,
-                promote_threshold=new_config.adaptive.promote_threshold,
+        if old_config.adaptive != new_config.adaptive:
+            self._adaptive_store = (
+                AdaptiveStore(
+                    learned_vocab_path=new_config.adaptive.learned_vocab_path,
+                    promote_threshold=new_config.adaptive.promote_threshold,
+                )
+                if new_config.adaptive.enabled
+                else None
             )
 
-        if is_hot_field("context.enabled") or is_hot_field("context.profiles"):
+        if old_config.context != new_config.context:
             self._context_enabled = new_config.context.enabled
-            if self._context_enabled and self._profile_resolver is not None:
+            if self._context_enabled:
+                if self._active_app_detector is None:
+                    self._active_app_detector = ActiveAppDetector()
+                if self._language_resolver is None:
+                    self._language_resolver = LanguageResolver()
                 self._profile_resolver = ProfileResolver(profiles=dict(new_config.context.profiles))
+            else:
+                self._profile_resolver = None
 
         # Vision's runtime knobs (anchors, output_format, timeout) are read
         # lazily from ``self._config`` by ``_apply_vision``, so re-saving
         # the config instance is sufficient — no further action needed here.
+        self._config = new_config

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 from agentvoca.config.schema import ASRConfig, FullConfig
@@ -36,6 +35,49 @@ def test_controller_marks_dirty_after_update(tmp_path: Path):
     c.update_section(cleanup={"style": "technical"})
     assert c.is_dirty() is True
     assert "cleanup.style" in c.changed_paths()
+
+
+def test_nested_page_update_preserves_hidden_observer_fields(tmp_path: Path):
+    initial = FullConfig.model_validate(
+        {
+            "asr": {"provider": "faster_whisper"},
+            "observer": {
+                "storage": {"dir": str(tmp_path / "custom")},
+                "selection": {"enabled": False},
+                "compile": {"output_dir": str(tmp_path / "exports")},
+            },
+        }
+    )
+    from agentvoca.setup.controllers.config_controller import ConfigController
+
+    controller = ConfigController(tmp_path / "config.yaml", initial)
+    controller.update_section(observer={"storage": {"retention_days": 14}})
+    observer = controller.draft.observer
+    assert observer.storage.dir == str(tmp_path / "custom")
+    assert observer.selection.enabled is False
+    assert observer.compile.output_dir == str(tmp_path / "exports")
+
+
+def test_missing_observer_key_does_not_block_editing(tmp_path: Path, monkeypatch):
+    from agentvoca.config.loader import load_config_lenient
+    from agentvoca.setup.controllers.config_controller import ConfigController
+
+    monkeypatch.delenv("MISSING_OBSERVER_KEY", raising=False)
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "asr:\n  provider: faster_whisper\nobserver:\n  enabled: true\n"
+        "  compile:\n    provider: openai_compatible\n"
+        "    endpoint: https://example.test/v1\n    api_key_env: MISSING_OBSERVER_KEY\n",
+        encoding="utf-8",
+    )
+    config, warning = load_config_lenient(path)
+    assert warning
+    controller = ConfigController(path, config)
+    controller.update_section(app={"language": "fr"})
+    assert controller.draft.app.language == "fr"
+    assert not controller.save().success
+    monkeypatch.setenv("MISSING_OBSERVER_KEY", "test")
+    assert controller.save().success
 
 
 def test_controller_save_persists_to_disk(tmp_path: Path):
@@ -73,11 +115,12 @@ def test_controller_save_makes_backup(tmp_path: Path):
 
 def test_controller_update_section_rejects_invalid_value(tmp_path: Path):
     """A field that violates the schema raises during update_section."""
-    from agentvoca.utils.errors import ConfigError
 
     c = load_controller(tmp_path / "nope.yaml")
-    with pytest.raises(ConfigError):
-        c.update_section(asr={"streaming_chunk_ms": 10})
+    c.update_section(asr={"streaming_chunk_ms": 10})
+    result = c.save()
+    assert not result.success
+    assert "streaming_chunk_ms" in (result.error or "")
 
 
 def test_controller_validate_detects_drift(tmp_path: Path):

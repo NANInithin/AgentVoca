@@ -106,6 +106,7 @@ class TrayApp(QtCore.QObject):
     _state_sig = QtCore.Signal(str)
     _message_sig = QtCore.Signal(str, str, int)
     _observer_state_sig = QtCore.Signal(str)  # "recording" | "paused" | "idle"
+    _observer_lifecycle_sig = QtCore.Signal(str)
     _observer_elapsed_sig = QtCore.Signal(str)  # formatted elapsed
     _observer_menu_sig = QtCore.Signal(str, str)  # message title, body (compile notification)
 
@@ -148,8 +149,10 @@ class TrayApp(QtCore.QObject):
         self._pause_action.setEnabled(False)
         self._pause_action.triggered.connect(lambda: self._emit_observer_action("toggle_pause"))
         self._open_last_action = self._observer_menu.addAction("Open last session\u2026")
+        self._open_last_action.setVisible(False)
         self._open_last_action.triggered.connect(lambda: self._emit_observer_action("open_last"))
         self._delete_all_action = self._observer_menu.addAction("Delete all sessions\u2026")
+        self._delete_all_action.setVisible(False)
         self._delete_all_action.triggered.connect(lambda: self._emit_observer_action("delete_all"))
         self._quit_action = self._menu.addAction("Quit")
         self._tray.setContextMenu(self._menu)
@@ -158,6 +161,7 @@ class TrayApp(QtCore.QObject):
         self._state_sig.connect(self._apply_state)
         self._message_sig.connect(self._apply_message)
         self._observer_state_sig.connect(self._apply_observer_state)
+        self._observer_lifecycle_sig.connect(self._apply_observer_lifecycle)
         self._observer_elapsed_sig.connect(self._apply_observer_elapsed)
         self._observer_menu_sig.connect(self._apply_observer_menu_notification)
 
@@ -179,6 +183,7 @@ class TrayApp(QtCore.QObject):
         self._elapsed_timer.timeout.connect(self._tick_elapsed)
         self._observer_state: str = "idle"
         self._session_started_monotonic: float = 0.0
+        self._observer_elapsed_before_pause_ms = 0
 
         # Show the tray icon
         self._tray.show()
@@ -319,19 +324,38 @@ class TrayApp(QtCore.QObject):
         # separate event.
 
     def _on_observer_started(self, event: object) -> None:
-        self._observer_state_sig.emit("recording")
-        self._observer_elapsed_sig.emit(_fmt_elapsed(0))
-        self._session_started_monotonic = time.monotonic()
-        self._elapsed_timer.start()
+        self._observer_lifecycle_sig.emit("start")
 
     def _on_observer_ended(self, event: object) -> None:
-        self._observer_state_sig.emit("idle")
-        if self._elapsed_timer.isActive():
-            self._elapsed_timer.stop()
+        self._observer_lifecycle_sig.emit("end")
 
     def _on_observer_paused(self, event: object) -> None:
         paused = bool(getattr(event, "paused", False))
-        self._observer_state_sig.emit("paused" if paused else "recording")
+        self._observer_lifecycle_sig.emit("pause" if paused else "resume")
+
+    def _apply_observer_lifecycle(self, action: str) -> None:
+        if action == "start":
+            self._session_started_monotonic = time.monotonic()
+            self._observer_elapsed_before_pause_ms = 0
+            self._apply_observer_state("recording")
+            self._apply_observer_elapsed(_fmt_elapsed(0))
+            self._elapsed_timer.start()
+        elif action == "end":
+            self._elapsed_timer.stop()
+            self._session_started_monotonic = 0.0
+            self._observer_elapsed_before_pause_ms = 0
+            self._apply_observer_state("idle")
+        elif action == "pause":
+            if self._session_started_monotonic:
+                self._observer_elapsed_before_pause_ms += int(
+                    (time.monotonic() - self._session_started_monotonic) * 1000
+                )
+            self._elapsed_timer.stop()
+            self._apply_observer_state("paused")
+        elif action == "resume":
+            self._session_started_monotonic = time.monotonic()
+            self._apply_observer_state("recording")
+            self._elapsed_timer.start()
 
     def _on_observer_compiled(self, event: object) -> None:
         title = "Observer session compiled"
@@ -386,7 +410,9 @@ class TrayApp(QtCore.QObject):
         """Recompute and display the elapsed time on the 10 s timer."""
         if not self._session_started_monotonic:
             return
-        elapsed_ms = int((time.monotonic() - self._session_started_monotonic) * 1000)
+        elapsed_ms = self._observer_elapsed_before_pause_ms + int(
+            (time.monotonic() - self._session_started_monotonic) * 1000
+        )
         self._observer_elapsed_sig.emit(_fmt_elapsed(elapsed_ms))
 
     def _apply_observer_menu_notification(self, title: str, body: str) -> None:

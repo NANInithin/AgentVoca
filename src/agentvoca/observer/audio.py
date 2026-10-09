@@ -95,6 +95,7 @@ class AmbientListener:
         queue_depth: int = 64,
         preroll_ms: int = 300,
         on_speech_onset: Optional[Callable[[], None]] = None,
+        capture_allowed: Optional[Callable[[], bool]] = None,
         vad: Optional[VADLike] = None,
     ) -> None:
         self._event_bus = event_bus
@@ -107,6 +108,7 @@ class AmbientListener:
         self._min_utterance_ms = min_utterance_ms
         self._max_utterance_ms = max_utterance_ms
         self._on_speech_onset = on_speech_onset
+        self._capture_allowed = capture_allowed or (lambda: True)
         self._vad: Optional[VADLike] = vad
         self._owns_vad = vad is None
         # Pre-roll deque size in blocks. Ceil so a 300 ms preroll on 64 ms
@@ -115,6 +117,7 @@ class AmbientListener:
         self._preroll_blocks = preroll_blocks
         self._queue: queue.Queue = queue.Queue(maxsize=queue_depth)
         self._thread: Optional[threading.Thread] = None
+        self._accepting = False
         # State machine — only the worker thread touches these.
         self._state: str = "IDLE"
         self._preroll: deque[tuple[bytes, int]] = deque(maxlen=preroll_blocks)
@@ -131,6 +134,8 @@ class AmbientListener:
 
         Strictly non-blocking: ``put_nowait`` with drop-on-full.
         """
+        if not self._accepting:
+            return
         try:
             self._queue.put_nowait((audio_bytes, timestamp_ms))
         except queue.Full:
@@ -143,7 +148,12 @@ class AmbientListener:
         used by tests to skip silero entirely.
         """
         if self._thread is not None and self._thread.is_alive():
+            if not self._accepting:
+                logger.warning("Ambient listener is still stopping; capture remains paused")
             return
+        self._queue = queue.Queue(maxsize=self._queue.maxsize)
+        self._reset_to_idle()
+        self._accepting = True
         if self._vad is None:
             # Own VAD — no event_bus so it does not publish VADSpeechEvent
             # (the dictation VAD owns that event on the main bus).
@@ -158,6 +168,7 @@ class AmbientListener:
         """Stop the worker thread and release the own VAD if any."""
         if self._thread is None:
             return
+        self._accepting = False
         # Enqueue the stop sentinel. If the queue is full (worker behind),
         # drain pending items first so the sentinel lands at the head of
         # the worker's next iteration.
@@ -171,6 +182,9 @@ class AmbientListener:
                     break
             self._queue.put(_SENTINEL_STOP)
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            logger.warning("Ambient listener did not stop before timeout")
+            return
         self._thread = None
         if self._owns_vad and self._vad is not None:
             stop = getattr(self._vad, "stop", None)
@@ -238,9 +252,9 @@ class AmbientListener:
         while True:
             item = self._queue.get()
             if item is _SENTINEL_STOP:
-                # Drain any in-progress utterance before exiting.
-                if self._state == "SPEAKING":
+                if self._state == "SPEAKING" and self._capture_allowed():
                     self._emit_utterance()
+                self._reset_to_idle()
                 return
             if item is _SENTINEL_FLUSH:
                 if self._state == "SPEAKING":
@@ -248,6 +262,14 @@ class AmbientListener:
                 self._reset_to_idle()
                 continue
             audio_bytes, ts_ms = item
+            try:
+                allowed = self._capture_allowed()
+            except Exception:
+                logger.exception("Ambient privacy check failed")
+                allowed = False
+            if not allowed:
+                self._reset_to_idle()
+                continue
             if not self._vad.is_available:
                 # No VAD → cannot segment. Drop the block; this is a
                 # misconfiguration logged at DEBUG.
@@ -300,7 +322,7 @@ class AmbientListener:
             # Continuous speech past the cap — emit and immediately
             # re-enter SPEAKING so a long monologue is split.
             self._emit_utterance()
-            self._utterance = [audio_bytes]
+            self._utterance = []
             self._utterance_start_ts_ms = ts_ms
             self._silence_start_ts_ms = None
 

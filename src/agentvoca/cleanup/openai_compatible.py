@@ -29,7 +29,7 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
             config: The cleanup configuration block.
         """
         self._config = config
-        self._endpoint = config.endpoint or "https://api.openai.com/v1"
+        self._endpoint = config.endpoint
         self._model = config.model or "gpt-4o-mini"
 
         # Get API key from env if configured
@@ -136,6 +136,8 @@ class OpenAICompatibleCleanupProvider(CleanupProvider):
         """
         if not transcript.strip():
             return transcript
+        if not self.is_available():
+            raise CleanupError("Cleanup endpoint or API key is not configured.")
 
         style = context.style if context else self._config.style
         preserve_code = context.preserve_code if context else self._config.preserve_code

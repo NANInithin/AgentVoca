@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from PySide6 import QtCore, QtWidgets
 
 from agentvoca.setup.controllers.config_controller import defaults_controller
-from agentvoca.setup.first_run import set_wizard_auto_open
+from agentvoca.setup.first_run import load_state
 from agentvoca.setup.pages.base import ConfigPage
 
 if TYPE_CHECKING:
@@ -81,8 +81,7 @@ class WelcomePage(ConfigPage):
         self._auto_open_check = QtWidgets.QCheckBox(
             "Show this wizard every time I launch agentvoca"
         )
-        self._auto_open_check.setChecked(True)
-        self._auto_open_check.toggled.connect(set_wizard_auto_open)
+        self._auto_open_check.setChecked(load_state().wizard_auto_open)
         layout.addWidget(self._auto_open_check)
 
         layout.addStretch()
@@ -115,6 +114,10 @@ class WelcomePage(ConfigPage):
         )
         self._warning_banner.setVisible(True)
 
+    @property
+    def auto_open_enabled(self) -> bool:
+        return self._auto_open_check.isChecked()
+
     # ── Slots ──────────────────────────────────────────────────────────
 
     def _on_use_defaults(self) -> None:
@@ -124,8 +127,15 @@ class WelcomePage(ConfigPage):
         defaults = defaults_controller(self.controller.path)
         self.controller.replace_draft(defaults.draft)
         if self._wizard() is not None:
-            # Jump to the last page so the user can review and save.
-            self._wizard().next()  # Advance past Welcome once, then jump.
+            wizard = self._wizard()
+            finish_id = wizard.pageIds()[-1]
+            for _ in wizard.pageIds():
+                if wizard.currentId() == finish_id:
+                    break
+                previous_id = wizard.currentId()
+                wizard.next()
+                if wizard.currentId() == previous_id:
+                    break
 
     def _on_customize(self) -> None:
         """No-op: customize means letting the wizard proceed naturally."""

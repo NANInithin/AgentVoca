@@ -43,7 +43,6 @@ _OCR_PROVIDER_OPTIONS = [
 
 _SELECTION_METHOD_OPTIONS = [
     ("Windows UI Automation (UIA)", "uia"),
-    ("OCR rect fallback", "ocr_rect"),
     ("Disabled", "none"),
 ]
 

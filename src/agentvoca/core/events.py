@@ -68,6 +68,7 @@ class RecordingStoppedEvent:
     audio_bytes: bytes
     duration_ms: int
     sample_rate: int
+    stream_overflowed: bool = False
 
 
 @dataclass
@@ -367,6 +368,7 @@ class ObserverUtteranceEvent:
     text: str
     source: str
     duration_ms: int
+    session_id: Optional[int] = None
 
 
 @dataclass

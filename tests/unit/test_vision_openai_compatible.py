@@ -102,6 +102,25 @@ async def test_extract_builds_image_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_extract_extra_cannot_replace_image_or_model(monkeypatch):
+    clients: list[DummyClient] = []
+    _patch_client(monkeypatch, {"choices": [{"message": {"content": "ok"}}]}, clients)
+    config = VisionConfig(
+        enabled=True,
+        endpoint="https://api.example.com/v1",
+        model="vision-model",
+        extra={"model": "wrong", "messages": [], "device": "cuda", "max_tokens": 128},
+    )
+    provider = OpenAICompatibleVisionProvider(config)
+    assert await provider.extract(b"image", instruction="read") == "ok"
+    body = clients[0].calls[0][1]
+    assert body["model"] == "vision-model"
+    assert body["messages"][1]["content"]
+    assert body["max_tokens"] == 128
+    assert "device" not in body
+
+
+@pytest.mark.asyncio
 async def test_extract_empty_image_raises() -> None:
     config = VisionConfig(enabled=True, endpoint="https://api.example.com/v1")
     provider = OpenAICompatibleVisionProvider(config)

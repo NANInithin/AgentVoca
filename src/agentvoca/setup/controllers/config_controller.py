@@ -121,15 +121,24 @@ class ConfigController:
             if value is None:
                 continue
             if isinstance(value, dict):
-                data[section] = {**(data.get(section) or {}), **value}
+                data[section] = _deep_merge(data.get(section) or {}, value)
             else:
                 data[section] = (
                     value.model_dump(exclude_defaults=False)
                     if hasattr(value, "model_dump")
                     else value
                 )
-        self._draft = FullConfig.model_validate(data, strict=False)
-        self._draft_dump = self._draft.model_dump(exclude_defaults=False)
+        self._draft_dump = data
+        try:
+            self._draft = FullConfig.model_validate(data, strict=False)
+            self._draft_dump = self._draft.model_dump(exclude_defaults=False)
+        except Exception:
+            # Keep invalid edits in the raw draft until save reports their
+            # errors. Missing remote API keys must not prevent editing the
+            # very page that fixes the key.
+            from agentvoca.config.loader import _construct_lenient  # noqa: PLC0415
+
+            self._draft = _construct_lenient(data)
 
     # ── Validation ─────────────────────────────────────────────────────
 
@@ -158,6 +167,8 @@ class ConfigController:
         ok, err = self.validate()
         if not ok:
             return SaveResult(success=False, error=err or "validation failed")
+
+        self._draft = FullConfig.model_validate(self._draft_dump, strict=False)
 
         try:
             backup = persistence.save_to_disk(self._draft, self._path)
@@ -197,7 +208,8 @@ class ConfigController:
 
     def restart_paths(self) -> list[str]:
         """Return the subset of ``changed_paths()`` that require a restart."""
-        return [p for p in self.changed_paths() if restart_policy.is_restart_field(p)]
+        _, restart = restart_policy.partition(self.changed_paths())
+        return restart
 
 
 # ── Diff helpers ──────────────────────────────────────────────────────
@@ -262,6 +274,19 @@ def _join(prefix: str, key: Any) -> str:
     if not prefix:
         return key_str
     return f"{prefix}.{key_str}"
+
+
+def _deep_merge(existing: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """Apply page edits without erasing nested fields absent from the page."""
+    result = dict(existing)
+    for key, value in changes.items():
+        previous = result.get(key)
+        result[key] = (
+            _deep_merge(previous, value)
+            if isinstance(previous, dict) and isinstance(value, dict)
+            else value
+        )
+    return result
 
 
 # ── Convenience ───────────────────────────────────────────────────────

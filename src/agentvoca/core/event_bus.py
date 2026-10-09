@@ -58,7 +58,7 @@ class EventBus:
             event: An event dataclass instance.
         """
         event_type = type(event)
-        handlers = self._subscribers.get(event_type, [])
+        handlers = tuple(self._subscribers.get(event_type, []))
 
         if not handlers:
             logger.debug("No handlers registered for %s", event_type.__name__)
@@ -74,20 +74,36 @@ class EventBus:
                         loop = None
                     if loop is not None:
                         # Publishing from within a running loop — schedule there.
-                        loop.create_task(result)
+                        loop.create_task(result).add_done_callback(self._log_async_failure)
                     elif self._loop is not None:
                         # Publishing from another thread — hand off to the
                         # persistent loop so spawned tasks survive.
-                        asyncio.run_coroutine_threadsafe(result, self._loop)
+                        future = asyncio.run_coroutine_threadsafe(result, self._loop)
+                        future.add_done_callback(self._log_async_failure)
                     else:
                         # No loop available — run to completion synchronously.
                         asyncio.run(result)
             except Exception:
                 logger.exception(
                     "Handler %s failed for event %s",
-                    handler.__name__,
+                    getattr(handler, "__name__", repr(handler)),
                     event_type.__name__,
                 )
+
+    @staticmethod
+    def _log_async_failure(future: asyncio.Future) -> None:
+        if future.cancelled():
+            return
+        try:
+            error = future.exception()
+        except Exception:
+            logger.exception("Could not inspect async event handler result")
+            return
+        if error is not None:
+            logger.error(
+                "Async event handler failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     def unsubscribe(self, event_type: Type[T], handler: Callable[[T], None]) -> None:
         """Remove a previously registered handler.

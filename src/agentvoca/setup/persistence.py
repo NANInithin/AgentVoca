@@ -19,6 +19,8 @@ preserving hand-written comments is no longer required.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -100,42 +102,68 @@ def save_to_disk_preserving(config: FullConfig, path: str | Path) -> Path:
     """
     dest = Path(path).expanduser().resolve()
     existing: dict[str, Any] = {}
-    if dest.is_file():
-        try:
+    try:
+        if dest.is_file():
             loaded = yaml.safe_load(dest.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            loaded = {}
-        if isinstance(loaded, dict):
-            existing = loaded
+            if isinstance(loaded, dict):
+                existing = loaded
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"Failed to read config file {dest}: {exc}") from exc
 
     new_dump = serialize(config)
-    known_top_level = set(new_dump.keys())
-    unknowns = {k: v for k, v in existing.items() if k not in known_top_level}
-    merged = {**unknowns, **new_dump}
+
+    def merge(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+        result = dict(old)
+        for key, value in new.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    merged = merge(existing, new_dump)
 
     # Validate to catch any drift the wizard might have introduced, but
     # write the merged dict directly so unknown top-level keys survive.
-    known_subset = {k: v for k, v in merged.items() if k in known_top_level}
+    known_subset = {k: v for k, v in merged.items() if k in new_dump}
     FullConfig.model_validate(known_subset, strict=False)
     return _write_yaml(merged, dest)
 
 
 def _write_yaml(data: dict[str, Any], dest: Path) -> Path:
     """Backup + write helper shared by the two save paths."""
-    _ensure_parent(dest)
-    backup = _backup_existing(dest)
+    temporary: Path | None = None
     try:
+        _ensure_parent(dest)
         dumped = yaml.safe_dump(
             data,
             sort_keys=False,
             allow_unicode=True,
             default_flow_style=False,
         )
-        dest.write_text(dumped, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=dest.parent,
+            prefix=f".{dest.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(dumped)
+            handle.flush()
+            os.fsync(handle.fileno())
+        backup = _backup_existing(dest)
+        os.replace(temporary, dest)
+        temporary = None
     except OSError as exc:
         raise ConfigError(f"Failed to write config file {dest}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"Failed to serialize config to YAML: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return backup or Path()
 
 

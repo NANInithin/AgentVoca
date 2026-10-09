@@ -46,13 +46,18 @@ def test_unset_for_session_is_safe_when_missing(monkeypatch):
 def test_powershell_snippet_quotes_value():
     snippet = powershell_snippet("OPENAI_API_KEY", "sk-abc")
     assert "SetEnvironmentVariable" in snippet
-    assert '"OPENAI_API_KEY"' in snippet
-    assert '"sk-abc"' in snippet
+    assert "'OPENAI_API_KEY'" in snippet
+    assert "'sk-abc'" in snippet
 
 
 def test_powershell_snippet_escapes_embedded_quotes():
     snippet = powershell_snippet("X", 'has "quote"')
-    assert 'has `"quote`' in snippet or "has" in snippet  # sanity
+    assert "'has \"quote\"'" in snippet
+
+
+def test_powershell_snippet_keeps_dollar_sign_literal():
+    snippet = powershell_snippet("X", "sk-$token'part")
+    assert "'sk-$token''part'" in snippet
 
 
 def test_bash_snippet_uses_export():

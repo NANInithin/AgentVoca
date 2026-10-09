@@ -60,6 +60,8 @@ class ScreenshotCapturer:
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)
         self._in_flight = 0
+        self._generation = 0
+        self._in_flight_by_generation: dict[int, int] = {}
 
     # ── Availability ───────────────────────────────────────────────────
 
@@ -83,11 +85,15 @@ class ScreenshotCapturer:
         dictation (each press queues another capture).
         """
         with self._lock:
+            generation = self._generation
             self._in_flight += 1
-        thread = threading.Thread(target=self._run_capture, daemon=True)
+            self._in_flight_by_generation[generation] = (
+                self._in_flight_by_generation.get(generation, 0) + 1
+            )
+        thread = threading.Thread(target=self._run_capture, args=(generation,), daemon=True)
         thread.start()
 
-    def _run_capture(self) -> None:
+    def _run_capture(self, generation: int) -> None:
         """Worker body: perform the snip, store bytes, publish an event.
 
         The capture event is published *before* ``_in_flight`` is decremented
@@ -105,20 +111,26 @@ class ScreenshotCapturer:
         try:
             if data:
                 with self._lock:
-                    index = len(self._screenshots)
-                    self._screenshots.append(data)
-                    width, height = _png_dimensions(data)
-                logger.info("Screenshot captured (index=%d, %d bytes)", index, len(data))
-                self._event_bus.publish(
-                    ScreenshotCapturedEvent(index=index, width=width, height=height)
-                )
+                    if generation == self._generation:
+                        index = len(self._screenshots)
+                        self._screenshots.append(data)
+                        width, height = _png_dimensions(data)
+                    else:
+                        index = None
+                if index is not None:
+                    logger.info("Screenshot captured (index=%d, %d bytes)", index, len(data))
+                    self._event_bus.publish(
+                        ScreenshotCapturedEvent(index=index, width=width, height=height)
+                    )
             else:
                 logger.info("Screenshot capture cancelled or produced no image")
         finally:
             with self._lock:
                 self._in_flight -= 1
-                if self._in_flight <= 0:
-                    self._idle.notify_all()
+                self._in_flight_by_generation[generation] -= 1
+                if self._in_flight_by_generation[generation] <= 0:
+                    del self._in_flight_by_generation[generation]
+                self._idle.notify_all()
 
     # ── Draining / synchronisation ─────────────────────────────────────
 
@@ -130,10 +142,10 @@ class ScreenshotCapturer:
         """
         deadline = time.monotonic() + timeout
         with self._idle:
-            while self._in_flight > 0:
+            while self._in_flight_by_generation.get(self._generation, 0) > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return self._in_flight == 0
+                    return self._in_flight_by_generation.get(self._generation, 0) == 0
                 self._idle.wait(remaining)
             return True
 
@@ -147,12 +159,17 @@ class ScreenshotCapturer:
     def has_pending(self) -> bool:
         """Return True if any captures are queued or in flight."""
         with self._lock:
-            return bool(self._screenshots) or self._in_flight > 0
+            return (
+                bool(self._screenshots)
+                or self._in_flight_by_generation.get(self._generation, 0) > 0
+            )
 
     def clear(self) -> None:
         """Discard any queued screenshots (e.g. at the start of a recording)."""
         with self._lock:
+            self._generation += 1
             self._screenshots = []
+            self._idle.notify_all()
 
     # ── Platform snip implementations ──────────────────────────────────
 
@@ -199,6 +216,7 @@ class ScreenshotCapturer:
             return None
 
         baseline = self._clipboard_signature(ImageGrab)
+        baseline_sequence = self._clipboard_sequence()
         # Launch the Snip & Sketch overlay (fire-and-forget; returns at once).
         try:
             os.startfile("ms-screenclip:")  # type: ignore[attr-defined]
@@ -214,7 +232,13 @@ class ScreenshotCapturer:
                 grabbed = None
             if grabbed is None or isinstance(grabbed, list):
                 continue
-            if self._image_signature(grabbed) == baseline:
+            sequence = self._clipboard_sequence()
+            unchanged = (
+                sequence == baseline_sequence
+                if baseline_sequence is not None and sequence is not None
+                else self._image_signature(grabbed) == baseline
+            )
+            if unchanged:
                 continue  # unchanged — user still selecting
             import io  # noqa: PLC0415
 
@@ -223,6 +247,16 @@ class ScreenshotCapturer:
             return buf.getvalue()
         logger.warning("No screenshot detected on clipboard within %ds", self._timeout_s)
         return None
+
+    @staticmethod
+    def _clipboard_sequence() -> int | None:
+        """Windows clipboard revision, which changes even for identical images."""
+        try:
+            import ctypes
+
+            return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+        except Exception:
+            return None
 
     @staticmethod
     def _clipboard_signature(image_grab) -> Optional[tuple]:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import threading
 import time
 from typing import Any, Optional
 
@@ -38,7 +39,7 @@ class RapidOCRProvider(OCRProvider):
     def __init__(self, config: ObserverOCRConfig) -> None:
         super().__init__(config)
         self._engine: Any = None
-        self._engine_lock = asyncio.Lock()
+        self._engine_lock = threading.Lock()
 
     def _get_engine(self) -> Any:
         """Return the cached engine, building it on first call.
@@ -47,11 +48,12 @@ class RapidOCRProvider(OCRProvider):
         pulling ``rapidocr_onnxruntime`` (R14).
         """
         if self._engine is None:
-            from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
+            with self._engine_lock:
+                if self._engine is None:
+                    from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
-            # intra_op_num_threads=1: prevent ONNX from spawning one
-            # thread per core, which alone would blow the 5% CPU budget.
-            self._engine = RapidOCR(intra_op_num_threads=1)
+                    # Keep ONNX's worker count within the Observer budget.
+                    self._engine = RapidOCR(intra_op_num_threads=1)
         return self._engine
 
     async def warm_up(self) -> None:

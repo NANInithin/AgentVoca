@@ -28,9 +28,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import AsyncIterator, Callable, Optional
 
 from agentvoca.asr.base import ASRProvider
+from agentvoca.core.types import TranscriptSegment
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class _AmbientJob:
     duration_ms: int
     sample_rate: int
     context: object | None = None
+    session_id: int | None = None
 
 
 class ASRArbiter:
@@ -63,7 +65,12 @@ class ASRArbiter:
             overflow the oldest job is dropped.
     """
 
-    def __init__(self, provider: ASRProvider, queue_depth: int = 16) -> None:
+    def __init__(
+        self,
+        provider: ASRProvider,
+        queue_depth: int = 16,
+        is_session_current: Callable[[int], bool] | None = None,
+    ) -> None:
         self._provider = provider
         self._queue: asyncio.Queue[_AmbientJob | None] = asyncio.Queue(maxsize=queue_depth)
         self._dictation_idle = asyncio.Event()
@@ -72,6 +79,22 @@ class ASRArbiter:
         self._task: Optional[asyncio.Task[None]] = None
         self._on_text: Optional[OnText] = None
         self._dropped: int = 0
+        self._provider_lock = asyncio.Lock()
+        self._active_ambient: asyncio.Task | None = None
+        self._active_session_id: int | None = None
+        self._on_drop: Callable[[int], None] | None = None
+        self._is_session_current = is_session_current
+
+    def set_on_drop(self, callback: Callable[[int], None]) -> None:
+        self._on_drop = callback
+
+    def _note_drop(self) -> None:
+        self._dropped += 1
+        if self._on_drop is not None:
+            try:
+                self._on_drop(1)
+            except Exception:
+                logger.debug("Ambient drop callback failed", exc_info=True)
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -133,11 +156,37 @@ class ASRArbiter:
         """
         self._dictation_idle.clear()
         try:
-            result = await self._provider.transcribe_audio(audio, sample_rate, context=context)
+            active = self._active_ambient
+            if active is not None and not active.done():
+                active.cancel()
+                await asyncio.gather(active, return_exceptions=True)
+            async with self._provider_lock:
+                result = await self._provider.transcribe_audio(audio, sample_rate, context=context)
         finally:
             self._dictation_idle.set()
         # ``transcribe_audio`` always returns a final segment.
         return result.text
+
+    async def stream_priority(
+        self,
+        audio_stream: AsyncIterator[bytes],
+        sample_rate: int,
+        context: object | None = None,
+    ) -> AsyncIterator[TranscriptSegment]:
+        """Keep ambient ASR off the shared provider for an entire dictation stream."""
+        self._dictation_idle.clear()
+        try:
+            active = self._active_ambient
+            if active is not None and not active.done():
+                active.cancel()
+                await asyncio.gather(active, return_exceptions=True)
+            async with self._provider_lock:
+                async for segment in self._provider.stream_transcribe(
+                    audio_stream, sample_rate, context=context
+                ):
+                    yield segment
+        finally:
+            self._dictation_idle.set()
 
     # ── Ambient path ───────────────────────────────────────────────
 
@@ -148,6 +197,7 @@ class ASRArbiter:
         duration_ms: int,
         sample_rate: int,
         context: object | None = None,
+        session_id: int | None = None,
     ) -> bool:
         """Enqueue an ambient job. Returns False if the enqueue failed.
 
@@ -161,6 +211,7 @@ class ASRArbiter:
             duration_ms=duration_ms,
             sample_rate=sample_rate,
             context=context,
+            session_id=session_id,
         )
         if self._loop is None:
             # No loop yet (start() was not called). The worker is not
@@ -190,14 +241,37 @@ class ASRArbiter:
         try:
             self._queue.get_nowait()
         except asyncio.QueueEmpty:
-            self._dropped += 1
+            self._note_drop()
             return
         try:
             self._queue.put_nowait(job)
         except asyncio.QueueFull:
-            self._dropped += 1
+            self._note_drop()
             return
-        self._dropped += 1
+        self._note_drop()
+
+    def discard_session(self, session_id: int) -> None:
+        """Cancel ambient work belonging to a closed Observer session."""
+        if self._loop is not None:
+            try:
+                self._loop.call_soon_threadsafe(self._discard_session_on_loop, session_id)
+            except RuntimeError:
+                pass
+
+    def _discard_session_on_loop(self, session_id: int) -> None:
+        if self._active_session_id == session_id and self._active_ambient is not None:
+            self._active_ambient.cancel()
+        retained: list[_AmbientJob | None] = []
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._queue.task_done()
+            if job is None or job.session_id != session_id:
+                retained.append(job)
+        for job in retained:
+            self._queue.put_nowait(job)
 
     @property
     def dropped_count(self) -> int:
@@ -211,20 +285,44 @@ class ASRArbiter:
         while True:
             job = await self._queue.get()
             if job is None:
+                self._queue.task_done()
                 return
-            # Dictation always wins — wait here, not in submit_ambient.
-            await self._dictation_idle.wait()
             try:
-                segment = await self._provider.transcribe_audio(
-                    job.audio, job.sample_rate, context=job.context
-                )
+                while True:
+                    await self._dictation_idle.wait()
+                    async with self._provider_lock:
+                        if not self._dictation_idle.is_set():
+                            continue
+                        self._active_ambient = asyncio.create_task(
+                            self._provider.transcribe_audio(
+                                job.audio, job.sample_rate, context=job.context
+                            )
+                        )
+                        self._active_session_id = job.session_id
+                        try:
+                            segment = await self._active_ambient
+                        except asyncio.CancelledError:
+                            if asyncio.current_task().cancelling():
+                                raise
+                            segment = None
+                        finally:
+                            self._active_ambient = None
+                            self._active_session_id = None
+                        break
+                if (
+                    segment is not None
+                    and self._on_text is not None
+                    and (
+                        job.session_id is None
+                        or self._is_session_current is None
+                        or self._is_session_current(job.session_id)
+                    )
+                ):
+                    try:
+                        self._on_text(segment.text, job.ts_ms, job.duration_ms)
+                    except Exception:
+                        logger.debug("on_text callback raised", exc_info=True)
             except Exception:
                 logger.debug("Ambient transcription failed", exc_info=True)
+            finally:
                 self._queue.task_done()
-                continue
-            if self._on_text is not None:
-                try:
-                    self._on_text(segment.text, job.ts_ms, job.duration_ms)
-                except Exception:
-                    logger.debug("on_text callback raised", exc_info=True)
-            self._queue.task_done()

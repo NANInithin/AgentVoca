@@ -275,14 +275,14 @@ class TestPipelinedCleanup:
         registry: ProviderRegistry,
         event_bus: EventBus,
     ) -> None:
-        """With cleanup.streaming=true and style!=technical, pipelining is active."""
+        """A provider with only full final results cannot pipeline cleanup."""
         orch = Orchestrator(
             config=streaming_pipelined_config,
             registry=registry,
             event_bus=event_bus,
         )
         await orch.start()
-        assert orch._pipelined_cleanup_enabled is True
+        assert orch._pipelined_cleanup_enabled is False
         await orch.stop()
 
     async def test_pipelined_cleanup_disabled_with_technical(
@@ -323,7 +323,7 @@ class TestPipelinedCleanup:
         registry: ProviderRegistry,
         event_bus: EventBus,
     ) -> None:
-        """During recording, finalized segments should be cleaned and accumulated."""
+        """Final notifications do not cause a duplicate cleanup call."""
         orch = Orchestrator(
             config=streaming_pipelined_config,
             registry=registry,
@@ -336,8 +336,7 @@ class TestPipelinedCleanup:
         event_bus.publish(SegmentFinalizedEvent(text="second segment", index=1))
         await asyncio.sleep(0.2)
 
-        # Segments should be accumulated
-        assert len(orch._cleaned_segments) >= 2
+        assert orch._cleaned_segments == []
 
         await orch.stop()
 
@@ -430,7 +429,7 @@ class TestPipelinedCleanup:
         registry: ProviderRegistry,
         event_bus: EventBus,
     ) -> None:
-        """With pipelined cleanup, rewrite() should be called for each segment."""
+        """A final notification alone does not charge for cleanup."""
         orch = Orchestrator(
             config=streaming_pipelined_config,
             registry=registry,
@@ -445,6 +444,6 @@ class TestPipelinedCleanup:
 
         cleanup_provider = orch._cleanup_provider
         assert cleanup_provider is not None
-        assert len(cleanup_provider.rewrite_calls) >= 3
+        assert len(cleanup_provider.rewrite_calls) == 0
 
         await orch.stop()

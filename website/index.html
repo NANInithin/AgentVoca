@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AgentVoca — Speak. It types. Any model, any app.</title>
+  <title>AgentVoca — You speak. It types. Any model, any app.</title>
   <meta name="description" content="AgentVoca is a local-first, model-agnostic voice dictation app for Windows and macOS. Pair any speech model with any cleanup model and insert clean text at your cursor.">
   <link rel="canonical" href="https://agentvoca.naninithin.me/">
   <meta property="og:type" content="website">
@@ -78,7 +78,13 @@
     .btn svg { width: 1rem; height: 1rem; }
 
     /* Hero */
-    .hero { padding: 6rem 0 4.5rem; text-align: center; }
+    .hero { padding: 4rem 0; min-height: calc(100vh - 64px); display: flex; align-items: center; }
+    .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 3rem; align-items: center; width: 100%; }
+    .hero h1 { margin-left: 0; font-size: clamp(2.75rem, 5.5vw, 4.75rem); }
+    .hero .lede { margin: 0; }
+    .hero .hero-actions { justify-content: flex-start; }
+    .hero .demo { margin: 0; max-width: none; }
+    @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } .hero { min-height: 0; } }
     .pill {
       display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem; border-radius: 999px;
       border: 1px solid var(--border); background: var(--card); font-size: .8rem; color: var(--muted-foreground);
@@ -215,9 +221,9 @@
 
   <main id="top">
     <section class="hero">
-      <div class="wrap">
+      <div class="wrap hero-grid"><div class="hero-copy">
         <span class="pill"><span class="dot"></span>v0.4.1 · Windows &amp; macOS · MIT</span>
-        <h1>Speak. <em>It types.</em></h1>
+        <h1>You speak. <em>It types.</em></h1>
         <p class="lede">Voice dictation built for developers. Use any speech model with any cleanup model, local or cloud, and get clean text at your cursor in any app. It leaves your code, file paths and URLs alone.</p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">
@@ -227,7 +233,7 @@
           <a class="btn btn-ghost" href="#install">Run from source</a>
         </div>
         <p class="hero-meta">Runs fully offline by default. No API key. No account.</p>
-
+        </div>
         <div class="demo" aria-label="Dictation demo">
           <div class="demo-bar"><span></span><span></span><span></span><span class="title" id="demo-app">VS Code — commit message</span></div>
           <div class="demo-body">

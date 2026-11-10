@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentVoca — Speak. It types. Any model, any app.</title>
+  <meta name="description" content="AgentVoca is a local-first, model-agnostic voice dictation app for Windows and macOS. Pair any speech model with any cleanup model and insert clean text at your cursor.">
+  <link rel="canonical" href="https://agentvoca.naninithin.me/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://agentvoca.naninithin.me/">
+  <meta property="og:title" content="AgentVoca — Voice dictation for developers">
+  <meta property="og:description" content="Local-first, model-agnostic dictation that keeps code, paths and URLs intact. Screenshot-to-text and Observer mode built in.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="AgentVoca — Voice dictation for developers">
+  <meta name="twitter:description" content="Local-first, model-agnostic dictation that keeps code, paths and URLs intact.">
+  <meta name="theme-color" content="#f7f5f0">
+  <link rel="icon" href="https://raw.githubusercontent.com/NANInithin/NANInithin.github.io/main/Assets/77537690.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --background: oklch(0.975 0.006 85);
+      --foreground: oklch(0.2 0.01 60);
+      --card: oklch(0.995 0.003 85);
+      --muted: oklch(0.94 0.008 85);
+      --muted-foreground: oklch(0.5 0.012 60);
+      --primary: oklch(0.6 0.17 38);
+      --primary-soft: oklch(0.93 0.04 45);
+      --primary-foreground: oklch(0.99 0.005 85);
+      --ink: oklch(0.22 0.012 60);
+      --ink-foreground: oklch(0.95 0.006 85);
+      --ok: oklch(0.6 0.13 150);
+      --border: oklch(0.2 0.01 60 / 10%);
+      --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-serif: "Instrument Serif", Georgia, serif;
+      --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+      --radius: 14px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--background); color: var(--foreground);
+      font-family: var(--font-sans); line-height: 1.55; -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    code, pre, .mono { font-family: var(--font-mono); }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 1.5rem; }
+    .serif { font-family: var(--font-serif); font-weight: 400; }
+    em.serif { font-style: italic; color: var(--primary); }
+
+    /* Header */
+    header {
+      position: sticky; top: 0; z-index: 50;
+      background: color-mix(in oklab, var(--background) 82%, transparent);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .header-inner { display: flex; align-items: center; gap: 2rem; height: 3.75rem; }
+    .brand { display: flex; align-items: center; gap: .55rem; font-weight: 600; letter-spacing: -.01em; }
+    .brand img { width: 1.9rem; height: 1.9rem; object-fit: contain; }
+    .nav { display: none; gap: 1.5rem; font-size: .9rem; color: var(--muted-foreground); }
+    .nav a:hover { color: var(--foreground); }
+    @media (min-width: 820px) { .nav { display: flex; } }
+    .header-cta { margin-left: auto; display: flex; gap: .5rem; align-items: center; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: .5rem; height: 2.75rem; padding: 0 1.15rem;
+      border-radius: 999px; font-size: .92rem; font-weight: 500; border: 1px solid transparent;
+      transition: transform .15s, background .15s, border-color .15s;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary { background: var(--ink); color: var(--ink-foreground); }
+    .btn-primary:hover { background: color-mix(in oklab, var(--ink) 88%, var(--primary)); }
+    .btn-ghost { border-color: var(--border); background: var(--card); }
+    .btn-ghost:hover { border-color: color-mix(in oklab, var(--foreground) 25%, transparent); }
+    .btn-sm { height: 2.25rem; padding: 0 .9rem; font-size: .85rem; }
+    .btn svg { width: 1rem; height: 1rem; }
+
+    /* Hero */
+    .hero { padding: 6rem 0 4.5rem; text-align: center; }
+    .pill {
+      display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--card); font-size: .8rem; color: var(--muted-foreground);
+    }
+    .pill .dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--ok); }
+    h1 {
+      font-family: var(--font-serif); font-weight: 400; letter-spacing: -.02em;
+      font-size: clamp(3rem, 8vw, 5.75rem); line-height: 1; margin: 1.5rem auto 1.25rem; max-width: 14ch;
+    }
+    h1 em { font-style: italic; color: var(--primary); }
+    .lede { font-size: 1.15rem; color: var(--muted-foreground); max-width: 40rem; margin: 0 auto; }
+    .hero-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: .75rem; margin-top: 2.25rem; }
+    .hero-meta { margin-top: 1.25rem; font-size: .8rem; color: var(--muted-foreground); }
+
+    /* Demo */
+    .demo {
+      margin: 4rem auto 0; max-width: 760px; text-align: left; background: var(--card);
+      border: 1px solid var(--border); border-radius: 20px;
+      box-shadow: 0 30px 60px -30px oklch(0.2 0.01 60 / 25%);
+      overflow: hidden;
+    }
+    .demo-bar { display: flex; align-items: center; gap: .4rem; padding: .8rem 1rem; border-bottom: 1px solid var(--border); }
+    .demo-bar span { width: .65rem; height: .65rem; border-radius: 50%; background: var(--muted); }
+    .demo-bar .title { margin-left: .75rem; width: auto; height: auto; background: none; font-size: .78rem; color: var(--muted-foreground); font-family: var(--font-mono); }
+    .demo-body { padding: 1.5rem 1.5rem 1.75rem; display: grid; gap: 1.1rem; }
+    .row-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .12em; color: var(--muted-foreground); margin-bottom: .35rem; }
+    .said { font-family: var(--font-serif); font-size: 1.35rem; font-style: italic; color: var(--muted-foreground); min-height: 2rem; }
+    .typed {
+      font-family: var(--font-mono); font-size: .9rem; background: var(--muted); border-radius: 10px;
+      padding: .9rem 1rem; min-height: 3.2rem; white-space: pre-wrap;
+    }
+    .typed .tok { color: var(--primary); }
+    .caret { display: inline-block; width: .5rem; height: 1rem; background: var(--foreground); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .overlay {
+      display: flex; align-items: center; gap: .75rem; padding: .55rem .9rem; border-radius: 999px;
+      background: var(--ink); color: var(--ink-foreground); font-size: .78rem; width: fit-content;
+    }
+    .wave { display: flex; align-items: center; gap: 3px; height: 18px; }
+    .wave i { display: block; width: 3px; border-radius: 3px; background: var(--primary); animation: wave 1s ease-in-out infinite; }
+    .wave i:nth-child(2) { animation-delay: .1s } .wave i:nth-child(3) { animation-delay: .2s }
+    .wave i:nth-child(4) { animation-delay: .3s } .wave i:nth-child(5) { animation-delay: .4s }
+    .wave i:nth-child(6) { animation-delay: .5s } .wave i:nth-child(7) { animation-delay: .6s }
+    .wave.idle i { animation: none; height: 4px; }
+    @keyframes wave { 0%,100% { height: 4px } 50% { height: 18px } }
+    .kbd { font-family: var(--font-mono); font-size: .72rem; padding: .1rem .4rem; border-radius: 5px; border: 1px solid oklch(1 0 0 / 20%); }
+
+    /* Sections */
+    section.block { padding: 6rem 0; border-top: 1px solid var(--border); }
+    .eyebrow { font-family: var(--font-mono); font-size: .75rem; color: var(--primary); letter-spacing: .08em; text-transform: uppercase; }
+    h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2.2rem, 4.5vw, 3.25rem); line-height: 1.05; letter-spacing: -.015em; margin: .75rem 0 1rem; max-width: 20ch; }
+    .section-lede { color: var(--muted-foreground); max-width: 38rem; margin: 0 0 3rem; }
+
+    .steps { display: grid; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    @media (min-width: 820px) { .steps { grid-template-columns: repeat(4, 1fr); } }
+    .step { background: var(--card); padding: 1.75rem 1.5rem; }
+    .step .n { font-family: var(--font-mono); font-size: .75rem; color: var(--muted-foreground); }
+    .step h3 { font-size: 1.05rem; font-weight: 600; margin: 1.25rem 0 .4rem; }
+    .step p { margin: 0; font-size: .9rem; color: var(--muted-foreground); }
+    .step .opts { margin-top: 1rem; font-family: var(--font-mono); font-size: .72rem; color: var(--foreground); }
+
+    .features { display: grid; gap: 1rem; }
+    @media (min-width: 700px) { .features { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1000px) { .features { grid-template-columns: repeat(3, 1fr); } }
+    .feature { padding: 1.5rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); }
+    .feature .ic { width: 2.25rem; height: 2.25rem; display: grid; place-items: center; border-radius: 10px; background: var(--primary-soft); color: var(--primary); }
+    .feature .ic svg { width: 1.1rem; height: 1.1rem; }
+    .feature h3 { font-size: 1rem; font-weight: 600; margin: 1rem 0 .35rem; }
+    .feature p { margin: 0; font-size: .9rem; color: var(--muted-foreground); }
+    .tag { display: inline-block; margin-left: .4rem; font-family: var(--font-mono); font-size: .65rem; padding: .1rem .4rem; border-radius: 5px; background: var(--muted); color: var(--muted-foreground); vertical-align: 2px; font-weight: 400; }
+
+    .uses { display: grid; gap: 2.5rem; }
+    @media (min-width: 820px) { .uses { grid-template-columns: repeat(2, 1fr); gap: 3rem 4rem; } }
+    .use h3 { font-family: var(--font-serif); font-weight: 400; font-size: 1.75rem; margin: 0 0 .5rem; }
+    .use p { margin: 0 0 1rem; color: var(--muted-foreground); }
+    .quote { border-left: 2px solid var(--primary); padding: .2rem 0 .2rem 1rem; font-size: .88rem; }
+    .quote .s { font-style: italic; color: var(--muted-foreground); }
+    .quote .o { font-family: var(--font-mono); font-size: .8rem; margin-top: .35rem; }
+
+    .split { display: grid; gap: 3rem; align-items: center; }
+    @media (min-width: 900px) { .split { grid-template-columns: 1fr 1.1fr; } }
+    .list { list-style: none; padding: 0; margin: 0; display: grid; gap: .9rem; }
+    .list li { display: flex; gap: .75rem; font-size: .95rem; }
+    .list li::before { content: ""; flex: none; width: .4rem; height: .4rem; margin-top: .55rem; border-radius: 50%; background: var(--primary); }
+    .list b { font-weight: 600; }
+    pre.code {
+      margin: 0; background: var(--ink); color: var(--ink-foreground); border-radius: var(--radius);
+      padding: 1.5rem; font-size: .82rem; line-height: 1.7; overflow-x: auto;
+    }
+    pre.code .c { color: oklch(0.65 0.01 60); }
+    pre.code .k { color: oklch(0.8 0.1 45); }
+    pre.code .v { color: oklch(0.82 0.1 150); }
+
+    .install { display: grid; gap: 1rem; }
+    @media (min-width: 820px) { .install { grid-template-columns: repeat(3, 1fr); } }
+    .install .card { padding: 1.5rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); }
+    .install h3 { font-size: 1rem; margin: .5rem 0 .4rem; font-weight: 600; }
+    .install p { margin: 0 0 1rem; font-size: .88rem; color: var(--muted-foreground); }
+    .install code { display: block; font-size: .76rem; background: var(--muted); border-radius: 8px; padding: .65rem .75rem; overflow-x: auto; white-space: nowrap; }
+
+    .cta { text-align: center; padding: 7rem 0; border-top: 1px solid var(--border); }
+    .cta h2 { margin: 0 auto 1.5rem; }
+
+    footer { border-top: 1px solid var(--border); padding: 2rem 0; font-size: .82rem; color: var(--muted-foreground); }
+    .footer-inner { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
+    .footer-inner nav { display: flex; gap: 1.25rem; }
+    .footer-inner a:hover { color: var(--foreground); }
+
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap header-inner">
+      <a class="brand" href="#top">
+        <img src="https://raw.githubusercontent.com/NANInithin/NANInithin.github.io/main/Assets/77537690.png" alt="">
+        AgentVoca
+      </a>
+      <nav class="nav">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#use-cases">Use cases</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#install">Install</a>
+      </nav>
+      <div class="header-cta">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/NANInithin/AgentVoca" aria-label="AgentVoca on GitHub">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.04 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.75.11 3.04.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.39-5.25 5.67.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap">
+        <span class="pill"><span class="dot"></span>v0.4.1 · Windows &amp; macOS · MIT</span>
+        <h1>Speak. <em>It types.</em></h1>
+        <p class="lede">Voice dictation built for developers. Use any speech model with any cleanup model, local or cloud, and get clean text at your cursor in any app. It leaves your code, file paths and URLs alone.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn btn-ghost" href="#install">Run from source</a>
+        </div>
+        <p class="hero-meta">Runs fully offline by default. No API key. No account.</p>
+
+        <div class="demo" aria-label="Dictation demo">
+          <div class="demo-bar"><span></span><span></span><span></span><span class="title" id="demo-app">VS Code — commit message</span></div>
+          <div class="demo-body">
+            <div class="overlay"><div class="wave" id="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span id="demo-status">Listening</span><span class="kbd">ctrl+space</span></div>
+            <div>
+              <div class="row-label">You say</div>
+              <div class="said" id="demo-said"></div>
+            </div>
+            <div>
+              <div class="row-label">AgentVoca types</div>
+              <div class="typed" id="demo-typed"><span class="caret"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="how">
+      <div class="wrap">
+        <span class="eyebrow">How it works</span>
+        <h2>Four steps from voice to cursor.</h2>
+        <p class="section-lede">Each step can use a different provider, and you can swap any of them with one line in your config.</p>
+        <div class="steps">
+          <div class="step"><span class="n">01</span><h3>Listen</h3><p>Hold a key to talk, press once to start and stop, or let it stop when you go quiet.</p><div class="opts">push_to_talk · toggle · auto_stop</div></div>
+          <div class="step"><span class="n">02</span><h3>Transcribe</h3><p>Turn speech into text on your machine, or send it to any OpenAI-compatible endpoint.</p><div class="opts">faster-whisper · openai_compatible</div></div>
+          <div class="step"><span class="n">03</span><h3>Clean up</h3><p>Remove filler, fix punctuation and apply your vocabulary. It never rewrites technical text.</p><div class="opts">rules · ollama · openai_compatible</div></div>
+          <div class="step"><span class="n">04</span><h3>Insert</h3><p>Types straight into the focused app. Falls back to clipboard paste, with one-key undo.</p><div class="opts">keyboard · clipboard · undo</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="features">
+      <div class="wrap">
+        <span class="eyebrow">Features</span>
+        <h2>Simple by default. Extra features when you want them.</h2>
+        <p class="section-lede">Your basic setup keeps working as you add more. Every advanced feature is off until you turn it on.</p>
+        <div class="features">
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg></div><h3>Leaves technical text alone</h3><p>Code names, URLs, file paths and command-line flags come through exactly as you said them.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h3l3-8 4 16 3-8h5"/></svg></div><h3>Live text<span class="tag">opt-in</span></h3><p>Words show up in the overlay as you speak, so you can see it's working.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg></div><h3>Adapts to each app<span class="tag">opt-in</span></h3><p>Short and casual in chat, plain in your editor, polished in email. Picked from the app you're in.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h6"/></svg></div><h3>Voice commands<span class="tag">opt-in</span></h3><p>Say "new paragraph", "scratch that" and similar commands without lifting a finger.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div><h3>Learns your words<span class="tag">opt-in</span></h3><p>Your corrections become vocabulary, with the right capitalization for your domain terms and snippets.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M8 12h8"/></svg></div><h3>Screenshot to text<span class="tag">opt-in</span></h3><p>Snip part of your screen while you talk. A vision model turns it into a table or text right where you say "as in the screenshot".</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="use-cases">
+      <div class="wrap">
+        <span class="eyebrow">Use cases</span>
+        <h2>For when typing slows you down.</h2>
+        <p class="section-lede">Use it anywhere you can type: your editor, terminal, chat, docs and AI tools.</p>
+        <div class="uses">
+          <div class="use">
+            <h3>Prompting AI tools</h3>
+            <p>Explain the whole problem out loud instead of typing a short version. Your prompts come out longer and clearer, with exact file names.</p>
+            <div class="quote"><div class="s">"refactor the auth middleware in src slash server dot ts to use the new session helper"</div><div class="o">Refactor the auth middleware in <span style="color:var(--primary)">src/server.ts</span> to use the new session helper.</div></div>
+          </div>
+          <div class="use">
+            <h3>Commits, issues and reviews</h3>
+            <p>Talk through what changed and get tidy prose with the technical details intact, typed straight into Git, GitHub or your tracker.</p>
+            <div class="quote"><div class="s">"fix um the retry loop in fetch user new paragraph closes issue four twelve"</div><div class="o">Fix the retry loop in <span style="color:var(--primary)">fetchUser</span>.<br><br>Closes #412.</div></div>
+          </div>
+          <div class="use">
+            <h3>Turning screens into text</h3>
+            <p>Snip a spreadsheet, chart or error dialog while you talk. You get markdown, which costs far fewer tokens than an image when you paste it into another AI tool.</p>
+            <div class="quote"><div class="s">"make a table of the expenses as in the attached screenshot"</div><div class="o">| Item | Amount |<br>| Hosting | €42.00 |</div></div>
+          </div>
+          <div class="use">
+            <h3>Recording a work session</h3>
+            <p>Observer mode records what you say, what's on screen and what you highlight, then writes it up as a readable summary, with a structured data file alongside.</p>
+            <div class="quote"><div class="s">Session · 38 min · 14 keyframes · 6 selections</div><div class="o">→ session-2026-11-10.md · session.json</div></div>
+          </div>
+          <div class="use">
+            <h3>Accessibility and less strain</h3>
+            <p>Give your hands a break from RSI or fatigue. Push-to-talk, toggle and auto-stop let you choose how much you touch the keyboard.</p>
+          </div>
+          <div class="use">
+            <h3>Privacy-sensitive work</h3>
+            <p>Use local speech and cleanup models for client code, health notes or anything under NDA. Your audio never leaves your machine.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="privacy">
+      <div class="wrap split">
+        <div>
+          <span class="eyebrow">Local-first &amp; model-agnostic</span>
+          <h2>Your models. Your machine.</h2>
+          <p class="section-lede" style="margin-bottom:2rem">The default setup runs fully offline. Point any step at Ollama, OpenAI or any compatible endpoint when you want to, and only that step sends data out.</p>
+          <ul class="list">
+            <li><span><b>Offline by default.</b> Uses faster-whisper and rule-based cleanup, with no key or account needed.</span></li>
+            <li><span><b>Clear consent in Observer mode.</b> An on-screen badge and a red tray icon show the whole time it's recording.</span></li>
+            <li><span><b>Exclusions and retention.</b> Skips password managers and private windows, has a pause hotkey, and deletes sessions after 7 days.</span></li>
+            <li><span><b>No hidden uploads.</b> Screenshots go out only when you snip one and turn on a cloud vision model.</span></li>
+          </ul>
+        </div>
+<pre class="code"><span class="c"># ~/.agentvoca/config.yaml</span>
+<span class="k">asr</span>:
+  <span class="k">provider</span>: <span class="v">faster_whisper</span>   <span class="c"># or openai_compatible</span>
+  <span class="k">model</span>: <span class="v">small.en</span>
+<span class="k">cleanup</span>:
+  <span class="k">provider</span>: <span class="v">ollama</span>           <span class="c"># rules · openai_compatible</span>
+  <span class="k">model</span>: <span class="v">qwen2.5:3b</span>
+<span class="k">app</span>:
+  <span class="k">mode</span>: <span class="v">push_to_talk</span>
+<span class="k">streaming</span>:
+  <span class="k">enabled</span>: <span class="v">true</span>
+<span class="k">observer</span>:
+  <span class="k">enabled</span>: <span class="v">false</span>
+  <span class="k">compile</span>: { <span class="k">provider</span>: <span class="v">rules</span> }</pre>
+      </div>
+    </section>
+
+    <section class="block" id="install">
+      <div class="wrap">
+        <span class="eyebrow">Install</span>
+        <h2>Set up in under a minute.</h2>
+        <p class="section-lede">A setup wizard opens the first time you run it. Choose "Use defaults" to start offline right away, or customize every setting.</p>
+        <div class="install">
+          <div class="card">
+            <span class="eyebrow">01</span>
+            <h3>Download</h3>
+            <p>Get the latest Windows zip from Releases and extract it anywhere.</p>
+            <code>AgentVoca-vX.X.X-windows-x64.zip</code>
+          </div>
+          <div class="card">
+            <span class="eyebrow">02</span>
+            <h3>Create the config folder</h3>
+            <p>Run this once in PowerShell.</p>
+            <code>New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca"</code>
+          </div>
+          <div class="card">
+            <span class="eyebrow">03</span>
+            <h3>Run it</h3>
+            <p>Start AgentVoca.exe, or run it from source on any platform with uv.</p>
+            <code>uv sync &amp;&amp; uv run agentvoca</code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="wrap">
+        <h2>Stop typing. <em class="serif">Start talking.</em></h2>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">Download AgentVoca</a>
+          <a class="btn btn-ghost" href="https://github.com/NANInithin/AgentVoca">Star on GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap footer-inner">
+      <span>© <span id="year">2026</span> AgentVoca · MIT License · Built by <a href="https://naninithin.me">NANI Nithin</a></span>
+      <nav>
+        <a href="https://github.com/NANInithin/AgentVoca">GitHub</a>
+        <a href="https://github.com/NANInithin/AgentVoca/releases">Releases</a>
+        <a href="https://github.com/NANInithin/AgentVoca/tree/main/docs">Docs</a>
+        <a href="https://agentquantix.naninithin.me">AgentQuantix</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+    (function () {
+      var demos = [
+        { app: 'VS Code — commit message',
+          said: 'um so fix the retry loop in fetch user new paragraph closes issue four twelve',
+          out: [['Fix the retry loop in ', ''], ['fetchUser', 'tok'], ['.\n\nCloses ', ''], ['#412', 'tok'], ['.', '']] },
+        { app: 'Claude — new chat',
+          said: 'refactor the auth middleware in src slash server dot ts to use the new session helper',
+          out: [['Refactor the auth middleware in ', ''], ['src/server.ts', 'tok'], [' to use the new session helper.', '']] },
+        { app: 'Terminal',
+          said: 'run pytest dash dash k observer dash x',
+          out: [['pytest ', ''], ['-k observer -x', 'tok']] }
+      ];
+      var said = document.getElementById('demo-said'), typed = document.getElementById('demo-typed'),
+          app = document.getElementById('demo-app'), wave = document.getElementById('wave'),
+          status = document.getElementById('demo-status');
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var i = 0;
+      function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+      function render(parts, n) {
+        var html = '', left = n;
+        parts.forEach(function (p) {
+          if (left <= 0) return;
+          var s = p[0].slice(0, left); left -= p[0].length;
+          var esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+          html += p[1] ? '<span class="tok">' + esc + '</span>' : esc;
+        });
+        typed.innerHTML = html + '<span class="caret"></span>';
+      }
+      async function run() {
+        for (;;) {
+          var d = demos[i++ % demos.length];
+          var total = d.out.reduce(function (a, p) { return a + p[0].length; }, 0);
+          app.textContent = d.app; said.textContent = ''; render(d.out, 0);
+          wave.classList.remove('idle'); status.textContent = 'Listening';
+          var words = d.said.split(' ');
+          if (reduce) { said.textContent = '"' + d.said + '"'; }
+          else for (var w = 1; w <= words.length; w++) { said.textContent = '"' + words.slice(0, w).join(' ') + '"'; await wait(170); }
+          wave.classList.add('idle'); status.textContent = 'Cleaning up';
+          await wait(600); status.textContent = 'Inserted';
+          if (reduce) render(d.out, total);
+          else for (var c = 1; c <= total; c++) { render(d.out, c); await wait(22); }
+          await wait(2600);
+        }
+      }
+      run();
+    })();
+  </script>
+</body>
+</html>

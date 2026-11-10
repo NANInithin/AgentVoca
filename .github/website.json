@@ -1,0 +1,6 @@
+{
+  "directory": "website",
+  "output": "dist",
+  "url": "https://agentvoca.naninithin.me",
+  "require_source": true
+}

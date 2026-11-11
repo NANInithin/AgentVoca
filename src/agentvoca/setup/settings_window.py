@@ -50,6 +50,9 @@ class SettingsWindow(QtWidgets.QMainWindow):
         self._controller = controller
         self._loading_pages = False
         self._widgets_dirty = False
+        # Restart-only fields saved since launch; the banner keeps listing
+        # them after Apply until the app is restarted.
+        self._saved_restart_paths: list[str] = []
 
         self.setWindowTitle("agentvoca Settings")
         self.resize(820, 640)
@@ -182,7 +185,8 @@ class SettingsWindow(QtWidgets.QMainWindow):
         self._update_button_states()
 
     def _update_banner(self) -> None:
-        restart = self._controller.restart_paths()
+        restart = list(self._saved_restart_paths)
+        restart += [p for p in self._controller.restart_paths() if p not in restart]
         if restart:
             items = "<br>".join(f"• <code>{path}</code>" for path in restart)
             self._banner_label.setText(
@@ -260,6 +264,9 @@ class SettingsWindow(QtWidgets.QMainWindow):
             except Exception:
                 logger.exception("config_saved listener raised")
 
+        for path in result.restart_paths:
+            if path not in self._saved_restart_paths:
+                self._saved_restart_paths.append(path)
         if result.restart_paths:
             details = "\n".join(f"• {p}" for p in result.restart_paths)
             QtWidgets.QMessageBox.information(

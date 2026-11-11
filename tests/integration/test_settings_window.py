@@ -67,6 +67,25 @@ def test_window_banner_lists_restart_paths(qapp, tmp_path: Path):
     window.deleteLater()
 
 
+def test_window_banner_stays_after_apply_of_restart_field(qapp, tmp_path: Path, monkeypatch):
+    from PySide6 import QtWidgets
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+    config_path = tmp_path / "config.yaml"
+    controller = load_controller(config_path)
+    window = SettingsWindow(controller)
+    window.show()
+
+    controller.update_section(app={"mode": "push_to_talk"})
+    window._refresh()  # type: ignore[attr-defined]
+    window._on_apply()  # type: ignore[attr-defined]
+
+    assert not controller.is_dirty()
+    assert window._banner.isVisible()  # type: ignore[attr-defined]
+    assert "app.mode" in window._banner_label.text()  # type: ignore[attr-defined]
+    window.deleteLater()
+
+
 def test_window_banner_hidden_for_hot_only_changes(qapp, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     controller = load_controller(config_path)

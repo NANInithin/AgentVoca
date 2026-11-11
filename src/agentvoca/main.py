@@ -785,13 +785,19 @@ def main(argv: list[str] | None = None) -> int:
 
     def _register_hotkeys(manager: HotkeyManager, cfg: FullConfig) -> None:
         """Bind every configured hotkey on ``manager``."""
-        manager.register(cfg.hotkeys.toggle_recording, "toggle_recording")
+        manager.register(
+            cfg.hotkeys.toggle_recording,
+            "toggle_recording",
+            emit_on_release=cfg.app.mode == "push_to_talk",
+        )
         manager.register(cfg.hotkeys.cancel, "cancel")
         manager.register(cfg.hotkeys.open_settings, "open_settings")
         if cfg.hotkeys.insert_last_transcript:
-            manager.register(cfg.hotkeys.insert_last_transcript, "insert_last")
+            manager.register(
+                cfg.hotkeys.insert_last_transcript, "insert_last", defer_until_released=True
+            )
         if cfg.hotkeys.undo:
-            manager.register(cfg.hotkeys.undo, "undo")
+            manager.register(cfg.hotkeys.undo, "undo", defer_until_released=True)
         if cfg.vision.enabled and cfg.hotkeys.capture_screenshot:
             manager.register(cfg.hotkeys.capture_screenshot, "capture_screenshot")
         # v0.4.0: Observer hotkeys. Always gated by observer.enabled; the

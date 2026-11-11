@@ -1046,6 +1046,7 @@ def main(argv: list[str] | None = None) -> int:
             max_duration_s=cfg.audio.max_recording_duration_s,
             chunker=chunker,
             loop=loop_thread.loop,
+            auto_stop=cfg.app.mode == "auto_stop",
         )
         try:
             audio.start()

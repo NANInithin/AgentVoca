@@ -367,3 +367,80 @@ def test_audio_capture_regression_silence_triggers_stop_recording() -> None:
 
         assert stop_calls, "auto-stop never fired — VAD wiring regression"
         capt.stop()
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("toggle", False), ("auto_stop", True)])
+def test_auto_stop_only_in_auto_stop_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, expected: bool
+) -> None:
+    """Silence must not end a toggle-mode dictation; only auto_stop does."""
+    vad_ctor = MagicMock(return_value=_FakeVAD(available_after_start=True))
+    kwargs_out: list[dict] = []
+    _install_fakes(monkeypatch, kwargs_out, vad_ctor)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"app:\n  mode: {mode}\nasr:\n  provider: faster_whisper\n  model: base\n",
+        encoding="utf-8",
+    )
+
+    assert m.main(["--config", str(config_path)]) == 0
+    assert kwargs_out[0].get("auto_stop") is expected
+
+
+def _silent_capture(auto_stop: bool, speech_blocks: int):
+    from unittest.mock import patch
+
+    from agentvoca.audio.capture import AudioCapture
+    from agentvoca.audio.vad import VAD
+    from agentvoca.core.event_bus import EventBus
+
+    event_bus = EventBus()
+    calls = {"n": 0}
+
+    def stubbed_is_speech(_chunk: bytes) -> bool:
+        calls["n"] += 1
+        return calls["n"] <= speech_blocks
+
+    vad = VAD(event_bus=event_bus)
+    vad._model = object()
+    vad.is_speech = stubbed_is_speech  # type: ignore[assignment]
+    with (
+        patch("agentvoca.audio.capture.select_device") as mock_select,
+        patch("agentvoca.audio.capture.sd.InputStream"),
+    ):
+        mock_select.return_value = {"name": "Mock", "index": 0}
+        capt = AudioCapture(
+            event_bus=event_bus,
+            vad=vad,
+            silence_timeout_ms=200,
+            max_duration_s=600,
+            auto_stop=auto_stop,
+        )
+        capt.start()
+    return capt
+
+
+def _feed_for(capt, seconds: float) -> None:
+    import time
+
+    import numpy as np
+
+    deadline = time.time() + seconds
+    while time.time() < deadline and capt.is_recording:
+        capt._audio_callback(np.zeros((1024, 1), dtype=np.float32), 1024, None, None)
+        time.sleep(0.02)
+
+
+@pytest.mark.parametrize(
+    ("auto_stop", "speech_blocks"),
+    [(False, 5), (True, 0)],
+    ids=["toggle-mode-silence-after-speech", "auto-stop-before-any-speech"],
+)
+def test_silence_does_not_stop_recording(auto_stop: bool, speech_blocks: int) -> None:
+    """Toggle mode never stops on silence; auto_stop waits for speech first."""
+    capt = _silent_capture(auto_stop=auto_stop, speech_blocks=speech_blocks)
+    capt.start_recording()
+    _feed_for(capt, 0.8)
+    assert capt.is_recording, "recording stopped on silence"
+    capt.stop()

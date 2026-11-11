@@ -47,6 +47,8 @@ class AudioCapture:
         device_name: Device name substring or ``"default"``.
         vad: Optional VAD instance for silence detection.
         silence_timeout_ms: Silence duration before auto-stop (ms).
+        auto_stop: Stop on silence (``app.mode: auto_stop``). The countdown
+            only starts once speech has been heard.
         max_duration_s: Maximum recording duration in seconds.
         frames_per_buffer: Number of frames per audio callback.
     """
@@ -63,8 +65,11 @@ class AudioCapture:
         frames_per_buffer: int = 1024,
         chunker: Optional[AudioChunker] = None,
         loop: Optional["asyncio.AbstractEventLoop"] = None,
+        auto_stop: bool = True,
     ) -> None:
         self._event_bus = event_bus
+        self._auto_stop = auto_stop
+        self._speech_detected = False
         self._sample_rate = sample_rate
         self._channels = channels
         self._device_name = device_name
@@ -202,6 +207,7 @@ class AudioCapture:
             self._stop_requested = False
             self._record_start_time = time.time()
             self._last_speech_time = time.time()
+            self._speech_detected = False
 
         # R2: drain any stale items the VAD worker hasn't consumed yet
         # from a prior recording, and reset the cached bool to optimistic.
@@ -355,9 +361,9 @@ class AudioCapture:
             except queue.Full:
                 pass  # worker is behind; skipping a block is harmless
             vad_speech, vad_ts_ms = self._last_vad_result
-            if timestamp_ms - vad_ts_ms > 500 or vad_speech:
+            if timestamp_ms - vad_ts_ms > 500 or vad_speech or not self._speech_detected:
                 self._last_speech_time = time.time()
-            else:
+            elif self._auto_stop:
                 silence_ms = int((time.time() - self._last_speech_time) * 1000)
                 if silence_ms >= self._silence_timeout_ms:
                     self.stop_recording()
@@ -397,6 +403,8 @@ class AudioCapture:
                     continue
                 self._last_vad_speech = speech
                 self._last_vad_result = (speech, timestamp_ms)
+                if speech:
+                    self._speech_detected = True
             except Exception:
                 logger.debug("VAD worker inference failed", exc_info=True)
                 # Fail open, same fallback behaviour VAD.is_speech uses.

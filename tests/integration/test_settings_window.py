@@ -60,10 +60,10 @@ def test_window_banner_lists_restart_paths(qapp, tmp_path: Path):
     window.show()  # so isVisible() is meaningful
 
     # Mutate a restart-only field.
-    controller.update_section(asr={"model": "large-v3"})
+    controller.update_section(asr={"streaming": True})
     window._refresh()  # type: ignore[attr-defined]
     assert window._banner.isVisible()  # type: ignore[attr-defined]
-    assert "asr.model" in window._banner_label.text()  # type: ignore[attr-defined]
+    assert "asr.streaming" in window._banner_label.text()  # type: ignore[attr-defined]
     window.deleteLater()
 
 

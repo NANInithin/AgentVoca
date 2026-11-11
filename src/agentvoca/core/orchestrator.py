@@ -1378,10 +1378,62 @@ class Orchestrator:
     # restarting the pipeline; restart-only fields are ignored (the UI shows
     # a "restart required" banner so the user can do it themselves).
 
+    def _reload_asr_provider(self, old_config: "FullConfig", new_config: "FullConfig") -> None:
+        """Swap in a provider built from ``new_config.asr``.
+
+        Streaming fields keep their running values: the audio-chunk wiring
+        was set up at start and only changes on restart.
+        """
+        streaming_fields = (
+            "streaming",
+            "streaming_model",
+            "streaming_chunk_ms",
+            "streaming_window_s",
+        )
+        asr_config = new_config.asr.model_copy(
+            update={f: getattr(old_config.asr, f) for f in streaming_fields}
+        )
+        if asr_config == old_config.asr:
+            return
+        try:
+            new_provider = self._registry.get_asr(asr_config)
+        except Exception:
+            logger.exception("Failed to reload ASR provider; keeping old one")
+            return
+
+        old_provider = self._asr_provider
+        self._asr_provider = new_provider
+        if self._asr_arbiter is not None:
+            self._asr_arbiter.set_provider(new_provider)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            old_shutdown = getattr(old_provider, "shutdown", None)
+            if old_shutdown is not None:
+                loop.create_task(old_shutdown())
+            if asr_config.warm_up:
+                loop.create_task(self._warm_up_asr(new_provider))
+
+        if not new_provider.is_available():
+            logger.warning("New ASR provider '%s' reports unavailable", new_provider.get_name())
+        else:
+            logger.info(
+                "ASR provider reloaded: %s (model=%s)", new_provider.get_name(), asr_config.model
+            )
+
+    async def _warm_up_asr(self, provider: ASRProvider) -> None:
+        try:
+            await provider.warm_up()
+        except Exception:
+            logger.exception("ASR warm-up after reload failed")
+
     def apply_config_update(self, new_config: "FullConfig") -> None:
         """Hot-apply every supported field from ``new_config``.
 
-        Restart-only fields (ASR provider, audio device, etc.) are skipped.
+        Restart-only fields (audio device, streaming, etc.) are skipped.
         The caller is expected to surface the restart-required paths to the
         user via the settings window's banner.
 
@@ -1414,6 +1466,10 @@ class Orchestrator:
                 logger.info("Snippets reloaded (%d triggers)", len(self._snippets.mapping))
             except Exception:
                 logger.exception("Failed to reload snippets; keeping old ones")
+
+        # ── ASR provider: re-instantiate (streaming stays restart-only) ─
+        if old_config.asr != new_config.asr:
+            self._reload_asr_provider(old_config, new_config)
 
         # ── Cleanup provider: re-instantiate ───────────────────────────
         if old_config.cleanup != new_config.cleanup:

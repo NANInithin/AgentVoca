@@ -24,19 +24,11 @@ logger = logging.getLogger(__name__)
 # A change to any matching path is restart-only.
 _RESTART_FIELDS: frozenset[str] = frozenset(
     {
-        # ASR provider swap requires re-instantiation (faster_whisper loads
-        # the model; openai_compatible builds a client).
-        "asr.provider",
-        "asr.model",
-        "asr.endpoint",
-        "asr.api_key_env",
-        "asr.language_hint",
-        "asr.extra",
+        # Streaming toggles change audio-chunk wiring set up at startup.
         "asr.streaming",
         "asr.streaming_model",
         "asr.streaming_chunk_ms",
         "asr.streaming_window_s",
-        "asr.warm_up",
         # Audio — sounddevice stream needs a restart.
         "audio.input_device",
         "audio.sample_rate",
@@ -80,6 +72,15 @@ _RESTART_FIELDS: frozenset[str] = frozenset(
 # us to make a decision rather than silently choosing one path.
 _HOT_FIELDS: frozenset[str] = frozenset(
     {
+        # ASR — runtime reload re-instantiates the provider (streaming
+        # settings stay restart-only).
+        "asr.provider",
+        "asr.model",
+        "asr.endpoint",
+        "asr.api_key_env",
+        "asr.language_hint",
+        "asr.extra",
+        "asr.warm_up",
         # Cleanup — runtime reload re-instantiates the cleanup provider.
         "cleanup.provider",
         "cleanup.model",

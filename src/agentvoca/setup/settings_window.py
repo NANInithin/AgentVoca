@@ -86,6 +86,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
 
         # Tab widget
         self._tabs = QtWidgets.QTabWidget()
+        self._pages: list[QtWidgets.QWidget] = []
         layout.addWidget(self._tabs, stretch=1)
 
         for page_cls in (
@@ -100,7 +101,13 @@ class SettingsWindow(QtWidgets.QMainWindow):
             ObserverPage,
         ):
             page = page_cls(self._controller)
-            self._tabs.addTab(page, page.title)
+            self._pages.append(page)
+            # Scroll so tall pages stay usable on small screens.
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll.setWidget(page)
+            self._tabs.addTab(scroll, page.title)
 
         # Bottom button row
         button_row = QtWidgets.QHBoxLayout()
@@ -133,8 +140,7 @@ class SettingsWindow(QtWidgets.QMainWindow):
 
     def _collect(self) -> None:
         """Push every page's UI state back into the controller draft."""
-        for i in range(self._tabs.count()):
-            page = self._tabs.widget(i)
+        for page in self._pages:
             page.save_to_controller()
 
     def _watch_page_edits(self) -> None:
@@ -167,8 +173,8 @@ class SettingsWindow(QtWidgets.QMainWindow):
         """Reload every page from the controller and update the banner."""
         self._loading_pages = True
         try:
-            for i in range(self._tabs.count()):
-                self._tabs.widget(i).load_from_controller()
+            for page in self._pages:
+                page.load_from_controller()
         finally:
             self._loading_pages = False
         self._widgets_dirty = False

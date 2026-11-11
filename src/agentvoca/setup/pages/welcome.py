@@ -1,14 +1,11 @@
 """Welcome page for the setup wizard.
 
-Always shown first. Three options:
+In the setup wizard (``compact=True``) it is a short intro before the model
+pages. In the Settings window it also offers:
 
 - **Use defaults** — adopt the v1 zero-config (faster_whisper + rules cleanup,
-  no API key, ctrl+space hotkey). Skips most subsequent pages.
-- **Customize** — proceed through every page.
+  no API key, ctrl+space hotkey).
 - **Restore from backup** — open a file dialog, load a ``.bak.*`` file.
-
-The page also exposes a checkbox for "Show this wizard every time I launch
-agentvoca" so users can opt out of the always-open behaviour.
 """
 
 from __future__ import annotations
@@ -19,7 +16,6 @@ from typing import TYPE_CHECKING
 from PySide6 import QtCore, QtWidgets
 
 from agentvoca.setup.controllers.config_controller import defaults_controller
-from agentvoca.setup.first_run import load_state
 from agentvoca.setup.pages.base import ConfigPage
 
 if TYPE_CHECKING:
@@ -32,6 +28,10 @@ class WelcomePage(ConfigPage):
         "Set up your voice dictation in a few steps. "
         "You can change everything later from the Settings window."
     )
+
+    def __init__(self, controller=None, *, compact: bool = False) -> None:
+        self._compact = compact
+        super().__init__(controller)
 
     def _build(self) -> None:
         super()._build()
@@ -53,12 +53,27 @@ class WelcomePage(ConfigPage):
 
         intro = QtWidgets.QLabel(
             "agentvoca listens to your microphone, transcribes speech, "
-            "and types the result wherever your cursor is. The Setup wizard "
-            "will configure everything end-to-end so you don't have to edit "
-            "a config file."
+            "and types the result wherever your cursor is."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+
+        if self._compact:
+            steps = QtWidgets.QLabel(
+                "Setup takes two steps:<br><br>"
+                "<b>1. Speech-to-text</b> — a free local model, or a cloud model.<br>"
+                "<b>2. Cleanup</b> — offline rules, or an AI model that polishes "
+                "the text.<br><br>"
+                "Cloud models need an API key. Paste it once: it is saved in "
+                "your system's secure credential store and you can delete it "
+                "at any time. Everything else uses sensible defaults and can "
+                "be changed later in Settings."
+            )
+            steps.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            steps.setWordWrap(True)
+            layout.addWidget(steps)
+            layout.addStretch()
+            return
 
         # Three big buttons, vertically stacked.
         defaults_btn = QtWidgets.QPushButton("Use defaults (fast, offline)")
@@ -75,14 +90,6 @@ class WelcomePage(ConfigPage):
         restore_btn.setMinimumHeight(36)
         restore_btn.clicked.connect(self._on_restore_from_backup)
         layout.addWidget(restore_btn)
-
-        layout.addSpacing(12)
-
-        self._auto_open_check = QtWidgets.QCheckBox(
-            "Show this wizard every time I launch agentvoca"
-        )
-        self._auto_open_check.setChecked(load_state().wizard_auto_open)
-        layout.addWidget(self._auto_open_check)
 
         layout.addStretch()
 
@@ -105,18 +112,19 @@ class WelcomePage(ConfigPage):
         fix it via "Customize", start over with "Use defaults", or load a
         good "Restore from backup".
         """
+        if self._compact:
+            hint = "Click <b>Next</b> to fix it, for example by saving the missing API key."
+        else:
+            hint = (
+                "Fix it below — <b>Customize</b> to edit it, <b>Use defaults</b> to "
+                "start fresh, or <b>Restore from backup</b>."
+            )
         self._warning_banner.setText(
             "<b>Your saved config could not be fully loaded.</b><br>"
-            f"{message}<br><br>"
-            "Fix it below — <b>Customize</b> to edit it, <b>Use defaults</b> to "
-            "start fresh, or <b>Restore from backup</b>. agentvoca is running on "
-            "safe defaults until you save."
+            f"{message}<br><br>{hint} agentvoca is running on safe defaults "
+            "until you save."
         )
         self._warning_banner.setVisible(True)
-
-    @property
-    def auto_open_enabled(self) -> bool:
-        return self._auto_open_check.isChecked()
 
     # ── Slots ──────────────────────────────────────────────────────────
 

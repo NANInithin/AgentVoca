@@ -134,74 +134,71 @@ See [docs/user-setup.md](docs/user-setup.md) for a full walkthrough.
 
 ## Installation
 
-Choose one of the two paths below depending on how you want to use AgentVoca.
+### Option A — One command with uv (Windows, macOS, Linux)
 
----
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
 
-### Option A — Download the `.exe` (Windows, no Python needed)
-
-This is the recommended path for most users.
-
-**Step 1 — Download the release**
-
-Go to the [Releases page](https://github.com/NANInithin/AgentVoca/releases) and download
-the latest `AgentVoca-vX.X.X-windows-x64.zip`. Extract it anywhere on your machine.
-
-**Step 2 — Create the config folder**
-
-AgentVoca looks for its config file at a fixed location. You need to create this folder
-once before running the app for the first time.
-
-Open PowerShell and run:
-
-```powershell
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca"
+```bash
+uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"
 ```
 
-**Step 3 — Run the app**
+uv downloads a supported Python (3.11–3.13) if needed and puts the `agentvoca`
+command on your PATH. Start the app with:
 
-Double-click `AgentVoca.exe` inside the extracted folder. The app starts in
-the system tray **and the setup wizard opens automatically** — pick "Use
-defaults" for a fast, offline experience, or "Customize" to walk through
-every setting. You can re-open the wizard any time from the tray menu
-(Setup Wizard…).
+```bash
+agentvoca
+```
 
-> No API key is needed by default. The app uses local faster-whisper + rules-based cleanup
-> out of the box. See [Cleanup Providers](#cleanup-providers) if you want LLM-powered cleanup.
+Upgrade later with `uv tool upgrade agentvoca`, remove it with
+`uv tool uninstall agentvoca`. Linux needs PortAudio for the microphone
+(`sudo apt install libportaudio2` on Debian/Ubuntu).
 
----
+### Option B — Download the `.exe` (Windows, no Python needed)
 
-### Option B — Run from source (Python, all platforms)
+Go to the [Releases page](https://github.com/NANInithin/AgentVoca/releases), download
+the latest `AgentVoca-vX.X.X-windows-x64.zip`, extract it and double-click `AgentVoca.exe`.
 
-This path is for developers or macOS/Linux users.
+### First launch
 
-**Step 1 — Clone the repo**
+The app starts in the system tray and a short setup opens. It asks only two things:
+
+1. **Speech-to-text** — a free local model (offline), or a cloud model.
+2. **Cleanup** — offline rules, or an AI model that polishes your text.
+
+For a cloud model, pick the provider (OpenAI, Groq, OpenRouter, Anthropic,
+Ollama or a custom endpoint), the model, and paste your API key. Everything else
+uses sensible defaults; change it any time in **Settings…** from the tray menu.
+The `~/.agentvoca` folder is created automatically.
+
+Press **Ctrl+Space** (default) to start and stop recording.
+
+> No API key is needed by default: local faster-whisper + rules-based cleanup work offline.
+
+### API keys
+
+Paste a key once and it stays saved after you close the app. Keys are stored in
+your system's secure credential store (Windows Credential Manager, macOS Keychain,
+or the Secret Service keyring on Linux), never in a plain file. Next to every key
+field you can:
+
+- **Delete key** — remove it right away.
+- Choose how long to keep it: until you delete it, until AgentVoca closes, or
+  delete automatically after 1, 7, 30 or 90 days.
+
+An environment variable you set yourself (e.g. `OPENAI_API_KEY`) always takes
+priority over a saved key. If no credential store is available (some headless
+Linux setups), the key is kept for the current session only.
+
+### Option C — Run from source (developers)
 
 ```bash
 git clone https://github.com/NANInithin/AgentVoca.git
 cd AgentVoca
-```
-
-**Step 2 — Install dependencies**
-
-```bash
-# requires Python 3.11+ and uv (https://docs.astral.sh/uv/)
 uv sync
-```
-
-**Step 3 — Run**
-
-```bash
 uv run agentvoca
 ```
 
-The app starts in the system tray **and the setup wizard opens automatically**.
-Pick "Use defaults" for a fast, offline experience, or "Customize" to walk
-through every setting. You can re-open the wizard any time from the tray
-menu (Setup Wizard…). See [docs/user-setup.md](docs/user-setup.md) for a
-detailed walkthrough.
-
-The app starts in the system tray. Press **Ctrl+Space** (default) to start and stop recording.
+See [docs/user-setup.md](docs/user-setup.md) for a detailed walkthrough.
 
 ---
 
@@ -237,8 +234,8 @@ cleanup:
 The first run downloads the Whisper model (~145 MB for `base.en`, ~3 GB for `large-v3`).
 
 > **Troubleshooting:** If you see `Config validation failed: ... requires an API key`, your
-> config has `cleanup.provider: openai_compatible` set. Either set the required environment
-> variable or switch to `cleanup.provider: rules` to run without any API key.
+> config has `cleanup.provider: openai_compatible` set. Either save the key in the setup /
+> Settings window, set the environment variable, or switch to `cleanup.provider: rules`.
 
 ---
 

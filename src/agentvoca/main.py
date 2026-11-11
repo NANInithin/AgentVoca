@@ -15,6 +15,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
+from agentvoca import keystore
 from agentvoca.app.hotkeys import HotkeyManager
 from agentvoca.app.overlay import StatusOverlay
 from agentvoca.app.tray import TrayApp
@@ -37,7 +38,6 @@ from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.insertion._executor import shutdown_input_executor
 from agentvoca.setup.controllers.config_controller import ConfigController
-from agentvoca.setup.first_run import load_state
 from agentvoca.setup.settings_window import SettingsWindow
 from agentvoca.setup.wizard import SetupWizard
 from agentvoca.utils.errors import AgentVocaError, AudioError, ConfigError
@@ -667,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="agentvoca",
-        description="A developer-first, model-agnostic voice dictation desktop app.",
+        description="A model-agnostic voice dictation desktop app.",
         epilog=(
             "Configure via ~/.agentvoca/config.yaml. "
             "See docs/config-reference.md for available options."
@@ -699,6 +699,14 @@ def main(argv: list[str] | None = None) -> int:
     # with a cloud provider (see the first-run gate near the bottom).
     is_first_run = not config_path.is_file()
     startup_config_warning: str | None = None
+    # Saved API keys must be in os.environ before the config is validated
+    # and providers read their ``api_key_env``.
+    try:
+        applied = keystore.load_saved_keys()
+        if applied:
+            logger.info("Loaded %d saved API key(s)", len(applied))
+    except Exception:
+        logger.warning("Could not load saved API keys", exc_info=True)
     if config_path.is_file():
         try:
             config, startup_config_warning = load_config_lenient(config_path)
@@ -1162,8 +1170,7 @@ def main(argv: list[str] | None = None) -> int:
     # pipeline. This guarantees we do not load a local ASR model the user is
     # about to replace with a cloud provider. On subsequent launches the
     # config already reflects the user's choice, so we build immediately and
-    # only surface a lenient-load warning / auto-open the wizard afterwards.
-    state = load_state()
+    # only surface a lenient-load warning afterwards.
     if is_first_run:
         logger.info("First run detected — opening setup wizard before starting the pipeline")
         first_run_wizard = SetupWizard(controller)
@@ -1200,16 +1207,11 @@ def main(argv: list[str] | None = None) -> int:
         if recoverable:
             _show_observer_recovery_dialog(observer_controller, recoverable, tray)
 
-    # On normal non-first-run launches, auto-open the wizard non-blocking (if
-    # the user has not opted out). Skipped when we already showed a modal wizard
-    # above (first run, or the broken-config fix flow) so it never opens twice.
-    if not is_first_run and not startup_config_warning and state.wizard_auto_open:
-        wizard = SetupWizard(controller)
-        wizard.config_saved.connect(_reload_hot_components)
-        # Non-blocking so the tray + hotkey are still usable while the
-        # user reviews settings.
-        wizard.show()
-        logger.info("Setup wizard shown on startup (auto-open enabled)")
+    # Timed "delete after N days" keys also expire while the app keeps running.
+    key_purge_timer = QtCore.QTimer()
+    key_purge_timer.setInterval(60 * 60 * 1000)
+    key_purge_timer.timeout.connect(keystore.purge_expired)
+    key_purge_timer.start()
 
     # ── Main loop ─────────────────────────────────────────────────────
     try:
@@ -1219,6 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0
     finally:
         logger.info("Shutting down…")
+        keystore.forget_session_keys()
         if wizard is not None:
             wizard.close()
         if settings_window is not None:

@@ -127,9 +127,6 @@ def _install_fakes(monkeypatch, audio_capture_kwargs_out: list[dict], vad_ctor: 
         set_observer_available=lambda *a, **k: None,
     )
 
-    from agentvoca.setup.first_run import AppState
-
-    monkeypatch.setattr(m, "load_state", lambda: AppState(wizard_auto_open=False))
     monkeypatch.setattr(m, "QtWidgets", fake_qtwidgets)
     monkeypatch.setattr(m, "SetupWizard", FakeWizard)
     monkeypatch.setattr(m, "SettingsWindow", MagicMock())

@@ -9,10 +9,12 @@ import weakref
 from PySide6 import QtCore, QtWidgets
 from shiboken6 import isValid
 
+from agentvoca import keystore
 from agentvoca.setup.controllers.model_catalog import ModelCatalog
+from agentvoca.setup.controllers.provider_presets import ASR_PRESETS, CUSTOM, preset_for
 from agentvoca.setup.pages._combobox_utils import resolve_editable_combo_id
+from agentvoca.setup.pages.api_key_field import ApiKeyField
 from agentvoca.setup.pages.base import ConfigPage
-from agentvoca.setup.pages.env_helper_dialog import EnvHelperDialog
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,10 @@ class AsrPage(ConfigPage):
     # with no Qt event loop of its own never fires.
     _fetch_result = QtCore.Signal(object, object)
 
-    def __init__(self, controller=None) -> None:
+    def __init__(self, controller=None, *, compact: bool = False) -> None:
+        # ``compact`` (setup wizard) shows only the model and API key; the
+        # Settings window shows every tuning option.
+        self._compact = compact
         # Catalog used to populate the cloud-model dropdown. Held on the page
         # so the cache survives across navigation away and back.
         self._model_catalog = ModelCatalog()
@@ -103,6 +108,7 @@ class AsrPage(ConfigPage):
         self._warm_up = QtWidgets.QCheckBox("Preload model at startup (recommended)")
         self._warm_up.setChecked(True)
         local_layout.addRow("", self._warm_up)
+        local_layout.setRowVisible(self._warm_up, not self._compact)
 
         streaming_box = QtWidgets.QGroupBox("Streaming (v2 — show live partials)")
         streaming_layout = QtWidgets.QFormLayout(streaming_box)
@@ -122,6 +128,7 @@ class AsrPage(ConfigPage):
         self._streaming_window.setSuffix(" s")
         streaming_layout.addRow("Window (0 = cumulative):", self._streaming_window)
         local_layout.addRow(streaming_box)
+        local_layout.setRowVisible(streaming_box, not self._compact)
 
         self._stack.addWidget(local_page)
 
@@ -129,8 +136,16 @@ class AsrPage(ConfigPage):
         cloud_page = QtWidgets.QWidget()
         cloud_layout = QtWidgets.QFormLayout(cloud_page)
 
+        self._preset = QtWidgets.QComboBox()
+        for label, url in ASR_PRESETS:
+            self._preset.addItem(label, url)
+        self._preset.addItem("Custom…", CUSTOM)
+        self._preset.currentIndexChanged.connect(self._on_preset_changed)
+        cloud_layout.addRow("Provider:", self._preset)
+
         self._endpoint = QtWidgets.QLineEdit()
         self._endpoint.setPlaceholderText("https://api.openai.com/v1")
+        self._endpoint.textChanged.connect(self._sync_preset)
         # Editing the endpoint invalidates any cached model list so the next
         # "Fetch models" call hits the new server, and re-checks whether the
         # host can actually do speech-to-text.
@@ -173,11 +188,15 @@ class AsrPage(ConfigPage):
         # Editing the env-var name invalidates the model cache too — the
         # cached entry was fetched with the old key.
         self._api_key_env.textChanged.connect(lambda _t: self._model_catalog.clear_cache())
+        self._api_key_env.textChanged.connect(lambda _t: self._api_key.refresh())
+        self._endpoint.textChanged.connect(lambda _t: self._api_key.refresh())
         env_row.addWidget(self._api_key_env)
-        self._env_helper_btn = QtWidgets.QPushButton("Set API key…")
-        self._env_helper_btn.clicked.connect(self._on_open_env_helper)
-        env_row.addWidget(self._env_helper_btn)
         cloud_layout.addRow("Env var name:", env_row)
+        cloud_layout.setRowVisible(env_row, not self._compact)
+
+        self._api_key = ApiKeyField(self._key_env_name)
+        self._api_key.key_changed.connect(lambda _n: self._model_catalog.clear_cache())
+        cloud_layout.addRow("API key:", self._api_key)
 
         # Status line for fetch errors. Hidden by default; shown after a
         # failed fetch with the error message.
@@ -194,8 +213,11 @@ class AsrPage(ConfigPage):
         # Shared extras
         self._language_hint = QtWidgets.QLineEdit()
         self._language_hint.setPlaceholderText("(optional) en, de, fr…")
-        layout.addWidget(QtWidgets.QLabel("Language hint (optional, overrides app.language):"))
+        language_label = QtWidgets.QLabel("Language hint (optional, overrides app.language):")
+        layout.addWidget(language_label)
         layout.addWidget(self._language_hint)
+        language_label.setVisible(not self._compact)
+        self._language_hint.setVisible(not self._compact)
 
         # Provider switch handler
         self._local_btn.toggled.connect(self._on_provider_toggled)
@@ -216,14 +238,22 @@ class AsrPage(ConfigPage):
         else:
             self._endpoint_warning.setVisible(False)
 
-    def _on_open_env_helper(self) -> None:
-        name = self._api_key_env.text().strip() or "OPENAI_API_KEY"
-        dialog = EnvHelperDialog(name, self)
-        # Keep the env-var field in sync with whatever name the user settled
-        # on inside the dialog. Without this the controller would still see
-        # the old name even after the user picked a new one.
-        dialog.env_var_changed.connect(self._api_key_env.setText)
-        dialog.exec()
+    def _key_env_name(self) -> str | None:
+        """Env var holding the cloud key: explicit name, else one per host."""
+        return self._api_key_env.text().strip() or keystore.default_key_env(
+            self._endpoint.text().strip(), "asr"
+        )
+
+    def _on_preset_changed(self, _index: int) -> None:
+        url = self._preset.currentData()
+        if url and url != CUSTOM and self._endpoint.text().strip() != url:
+            self._endpoint.setText(url)
+
+    def _sync_preset(self, text: str = "") -> None:
+        idx = self._preset.findData(preset_for(text, ASR_PRESETS))
+        self._preset.blockSignals(True)
+        self._preset.setCurrentIndex(idx)
+        self._preset.blockSignals(False)
 
     def _on_fetch_models(self) -> None:
         """Kick off an async model-list fetch for the current endpoint + key."""
@@ -231,15 +261,11 @@ class AsrPage(ConfigPage):
             return
         endpoint_input = self._endpoint.text().strip()
         endpoint = endpoint_input or "https://api.openai.com/v1"
-        env_var = self._api_key_env.text().strip()
+        self._api_key.commit_pending()
+        env_var = self._key_env_name() or ""
+        # Some hosts (e.g. OpenRouter) list models without a key, so try anyway.
         api_key = os.environ.get(env_var) if env_var else None
-        if env_var and not api_key:
-            self._show_model_status(
-                f"Env var '{env_var}' is not set. "
-                "Click 'Set API key…' or set it in your shell, then retry.",
-                error=True,
-            )
-            return
+        self._missing_key_hint = bool(env_var and not api_key)
 
         self._fetch_in_flight = True
         self._fetch_models_btn.setEnabled(False)
@@ -257,7 +283,7 @@ class AsrPage(ConfigPage):
             if page is not None and isValid(page):
                 if (
                     page._endpoint.text().strip() != endpoint_input
-                    or page._api_key_env.text().strip() != env_var
+                    or (page._key_env_name() or "") != env_var
                 ):
                     entries, error = (
                         None,
@@ -278,6 +304,8 @@ class AsrPage(ConfigPage):
         self._fetch_models_btn.setEnabled(True)
         self._fetch_models_btn.setText("Fetch models…")
         if error is not None:
+            if getattr(self, "_missing_key_hint", False):
+                error += " Paste your API key above and click 'Save key', then retry."
             self._show_model_status(error, error=True)
             return
         # Preserve the user's currently-selected/typed id so we don't blow it
@@ -342,6 +370,8 @@ class AsrPage(ConfigPage):
         finally:
             self._api_model.blockSignals(False)
         self._api_key_env.setText(c.api_key_env or "")
+        self._sync_preset(self._endpoint.text())
+        self._api_key.refresh()
 
         self._language_hint.setText(c.language_hint or "")
 
@@ -357,11 +387,12 @@ class AsrPage(ConfigPage):
             # the right one (see its docstring for why currentData() alone
             # is not enough).
             model_value = resolve_editable_combo_id(self._api_model)
+            self._api_key.commit_pending()
             asr = {
                 "provider": "openai_compatible",
                 "model": (model_value or "").strip() or None,
                 "endpoint": self._endpoint.text().strip() or None,
-                "api_key_env": self._api_key_env.text().strip() or None,
+                "api_key_env": self._key_env_name(),
                 "language_hint": self._language_hint.text().strip() or None,
                 "streaming": False,
                 "streaming_model": None,

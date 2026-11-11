@@ -1,66 +1,53 @@
 # First-time setup
 
-agentvoca v0.3.5 ships with an **interactive setup wizard** so you no longer
-need to hand-edit `~/.agentvoca/config.yaml`. The wizard walks you through
-every setting in roughly five minutes.
+agentvoca opens a short setup the first time you launch it (and again only if
+your saved config cannot be loaded). It asks about models and API keys only;
+everything else starts on sensible defaults and lives in **Settings**.
 
-> **The wizard opens automatically every time you launch agentvoca.** Uncheck
-> "Show this wizard every time I launch agentvoca" on the Welcome page if you
-> prefer to launch straight into the dictation overlay.
+## Install
+
+```bash
+uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"
+agentvoca
+```
 
 ## Quick start
 
-1. Launch agentvoca (double-click the .exe, or `uv run agentvoca`).
-2. The wizard appears. Choose one of:
-   - **Use defaults** — faster-whisper (local) + rules cleanup + no API key.
-   - **Customize** — recommended; walk through every page.
-   - **Restore from backup** — load a `config.yaml.bak.*` file.
-3. Work through the pages. Anything you skip can be changed later from
-   **Settings** in the tray menu.
-4. Click **Save** on the final page. agentvoca writes `config.yaml`,
-   takes a timestamped backup, and (where possible) hot-applies your changes
-   without restarting.
+1. Launch agentvoca (`agentvoca`, the .exe, or `uv run agentvoca` from source).
+2. **Speech-to-text** — pick a local faster-whisper model (offline, free) or
+   a cloud model. For cloud, choose the provider (OpenAI, Groq, OpenRouter or
+   Custom), the model, and paste your API key.
+3. **Cleanup** — Off, Rules (offline) or an LLM. For an LLM, choose the
+   provider (OpenAI, OpenRouter, Groq, Anthropic, Ollama or Custom), the model,
+   and paste your API key.
+4. Click **Save**. agentvoca writes `config.yaml`, takes a timestamped backup,
+   and starts.
 
-## What each page does
-
-| # | Page | What you set |
-|---|---|---|
-| 1 | Welcome | Defaults / customize / restore; auto-open preference |
-| 2 | App basics | Language, recording mode, cleanup style, debug logging |
-| 3 | Microphone | Input device, sample rate, VAD, silence timeout |
-| 4 | Speech-to-text | faster-whisper (local) **or** OpenAI-compatible API |
-| 5 | Cleanup | Off / Rules (offline) / LLM (cloud) |
-| 6 | Hotkeys | One preset dropdown per action; `(disabled)` to turn one off |
-| 7 | Vocabulary & snippets | Inline terms + file paths |
-| 8 | Advanced | Context, voice commands, adaptive vocab, vision, insertion |
-| 9 | Review & save | Summary of your changes; click **Save** |
+Audio, hotkeys, vocabulary, streaming, prompts, vision, Observer and every
+other option are in **Tray menu → Settings…**.
 
 ## API keys
 
-The wizard never writes your API key to disk. On the Speech-to-text and
-Cleanup pages, click **Set API key…** to:
+Paste a key once and it is kept after you close the app. The key is stored in
+the operating system's secure credential store (Windows Credential Manager,
+macOS Keychain, Secret Service on Linux) via `keyring`, never in
+`config.yaml` or any other plain file. `~/.agentvoca/keys.json` only lists
+which keys are saved and when they expire.
 
-1. See whether the env var is currently set in this session.
-2. Set it for the current process (so saving the config takes effect
-   immediately).
-3. Copy a shell snippet to make it permanent:
+Each key field has:
 
-   ```powershell
-   # PowerShell (Windows)
-   [System.Environment]::SetEnvironmentVariable(
-       "OPENAI_API_KEY", "sk-...", "User")
-   ```
+- **Save key** — store the pasted key (also happens when you click Save /
+  Next with a pasted key).
+- **Delete key** — remove the key from the credential store and from the
+  running app.
+- **Keep** choice — *Keep until I delete it* (default), *Delete when AgentVoca
+  closes*, or *Delete after 1 / 7 / 30 / 90 days*. Expired keys are removed at
+  startup and checked hourly while the app runs.
 
-   ```bash
-   # bash / zsh (macOS / Linux)
-   export OPENAI_API_KEY="sk-..."
-   echo 'export OPENAI_API_KEY="sk-..."' >> ~/.zshrc
-   ```
-
-   ```fish
-   # fish
-   set -Ux OPENAI_API_KEY "sk-..."
-   ```
+Saved keys are loaded into the matching environment variable (for example
+`OPENAI_API_KEY`) at startup. If you already set that variable yourself, your
+value wins. When no credential store is available (some headless Linux
+machines), keys are kept for the current session only and the app tells you.
 
 ## Hot-reload vs restart
 
@@ -79,8 +66,7 @@ surfaces a banner listing every field that needs a relaunch.
 
 ## Reopening the wizard
 
-The wizard auto-opens every launch unless you disabled it. To re-run it on
-demand:
+To re-run the setup on demand:
 
 - **Tray menu → Setup Wizard…**
 - **Hotkey**: `Ctrl+Alt+,` opens Settings; the toolbar includes a "Reopen
@@ -94,7 +80,8 @@ Every save creates a timestamped backup next to `config.yaml`:
 ~/.agentvoca/
 ├── config.yaml
 ├── config.yaml.bak.20260630_153022
-└── state.json     ← wizard preferences (auto-open, etc.)
+├── keys.json      ← names + expiry of saved API keys (no key values)
+└── state.json     ← first-run state
 ```
 
 To restore, use the wizard's **Restore from backup** button, or just copy a

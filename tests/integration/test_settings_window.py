@@ -86,7 +86,7 @@ def test_widget_edit_enables_save_and_persists(qapp, tmp_path: Path, monkeypatch
     path = tmp_path / "config.yaml"
     window = SettingsWindow(load_controller(path))
     assert not window._save_btn.isEnabled()
-    window._tabs.widget(1)._language.setText("fr")
+    window._pages[1]._language.setText("fr")
     assert window._save_btn.isEnabled()
     monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args: None)
     window._save_btn.click()

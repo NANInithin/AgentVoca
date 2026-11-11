@@ -143,12 +143,6 @@ def _install_fakes(monkeypatch, order: list[str], *, wizard_saves: bool = False)
         set_observer_available=lambda *a, **k: None,
     )
 
-    # Keep state.json out of the picture (it lives in the real home dir):
-    # auto-open defaults to True, which is what a fresh install would see.
-    from agentvoca.setup.first_run import AppState
-
-    monkeypatch.setattr(m, "load_state", lambda: AppState(wizard_auto_open=True))
-
     monkeypatch.setattr(m, "QtWidgets", fake_qtwidgets)
     monkeypatch.setattr(m, "SetupWizard", FakeWizard)
     monkeypatch.setattr(m, "SettingsWindow", MagicMock())
@@ -214,13 +208,11 @@ def test_existing_config_starts_pipeline_without_a_modal_wizard(tmp_path: Path, 
     rc = m.main(["--config", str(config_path)])
     assert rc == 0
 
-    # Not a first run: the pipeline starts, and the wizard is only auto-opened
-    # non-blocking (show), never run modally (exec).
+    # Not a first run and the config is valid: the pipeline starts and the
+    # setup wizard does not open at all.
     assert "orchestrator.start" in order
     assert "wizard.exec" not in order
-    assert "wizard.show" in order  # wizard_auto_open defaults to True
-    # Pipeline built before the non-blocking wizard is shown.
-    assert order.index("orchestrator.start") < order.index("wizard.show"), order
+    assert "wizard.show" not in order
 
 
 def test_existing_config_with_missing_api_key_does_not_crash(tmp_path: Path, monkeypatch):

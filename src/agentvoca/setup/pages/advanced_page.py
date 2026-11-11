@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from PySide6 import QtWidgets
 
+from agentvoca import keystore
+from agentvoca.setup.pages.api_key_field import ApiKeyField
 from agentvoca.setup.pages.base import ConfigPage
-from agentvoca.setup.pages.env_helper_dialog import EnvHelperDialog
 
 
 class AdvancedPage(ConfigPage):
@@ -123,10 +124,11 @@ class AdvancedPage(ConfigPage):
         self._vision_api_key_env = QtWidgets.QLineEdit()
         self._vision_api_key_env.setPlaceholderText("OPENROUTER_API_KEY")
         env_row.addWidget(self._vision_api_key_env)
-        helper = QtWidgets.QPushButton("Set API key…")
-        helper.clicked.connect(self._on_vision_env_helper)
-        env_row.addWidget(helper)
         layout.addRow("Env var name:", env_row)
+        self._vision_api_key = ApiKeyField(self._vision_key_env_name)
+        self._vision_api_key_env.textChanged.connect(lambda _t: self._vision_api_key.refresh())
+        self._vision_endpoint.textChanged.connect(lambda _t: self._vision_api_key.refresh())
+        layout.addRow("API key:", self._vision_api_key)
 
         self._vision_timeout = QtWidgets.QSpinBox()
         self._vision_timeout.setRange(1, 300)
@@ -160,12 +162,16 @@ class AdvancedPage(ConfigPage):
         if path:
             self._adaptive_path.setText(path)
 
-    def _on_vision_env_helper(self) -> None:
-        dialog = EnvHelperDialog(
-            self._vision_api_key_env.text().strip() or "OPENROUTER_API_KEY", self
+    def _vision_key_env_name(self) -> str | None:
+        return self._vision_api_key_env.text().strip() or keystore.default_key_env(
+            self._vision_endpoint.text().strip() or "https://openrouter.ai/api/v1", "vision"
         )
-        dialog.env_var_changed.connect(self._vision_api_key_env.setText)
-        dialog.exec()
+
+    def _saved_vision_key(self) -> str | None:
+        """Use the derived env var name only once a key exists under it."""
+        self._vision_api_key.commit_pending()
+        name = self._vision_key_env_name()
+        return name if name and keystore.key_status(name).source else None
 
     # ── Load / save ────────────────────────────────────────────────────
 
@@ -199,6 +205,7 @@ class AdvancedPage(ConfigPage):
         self._vision_endpoint.setText(v.endpoint or "")
         self._vision_model.setText(v.model or "")
         self._vision_api_key_env.setText(v.api_key_env or "")
+        self._vision_api_key.refresh()
         self._vision_timeout.setValue(v.capture_timeout_s)
         idx = self._vision_output_format.findData(v.output_format)
         if idx >= 0:
@@ -252,7 +259,7 @@ class AdvancedPage(ConfigPage):
             "enabled": self._vision_enabled.isChecked(),
             "endpoint": self._vision_endpoint.text().strip() or None,
             "model": self._vision_model.text().strip() or None,
-            "api_key_env": self._vision_api_key_env.text().strip() or None,
+            "api_key_env": self._vision_api_key_env.text().strip() or self._saved_vision_key(),
             "capture_timeout_s": self._vision_timeout.value(),
             "output_format": self._vision_output_format.currentData() or "auto",
             "anchor_phrases": anchors,

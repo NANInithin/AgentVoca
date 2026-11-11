@@ -7,10 +7,12 @@ import os
 
 from PySide6 import QtCore, QtWidgets
 
+from agentvoca import keystore
 from agentvoca.setup.controllers.model_catalog import ModelCatalog
+from agentvoca.setup.controllers.provider_presets import CUSTOM, LLM_PRESETS, preset_for
 from agentvoca.setup.pages._combobox_utils import resolve_editable_combo_id
+from agentvoca.setup.pages.api_key_field import ApiKeyField
 from agentvoca.setup.pages.base import ConfigPage
-from agentvoca.setup.pages.env_helper_dialog import EnvHelperDialog
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +37,9 @@ class CleanupPage(ConfigPage):
     # with no Qt event loop of its own never fires.
     _fetch_result = QtCore.Signal(object, object)
 
-    def __init__(self, controller=None) -> None:
+    def __init__(self, controller=None, *, compact: bool = False) -> None:
+        # ``compact`` (setup wizard) shows only the model and API key.
+        self._compact = compact
         # Catalog used to populate the LLM-model dropdown. Held on the page
         # so the cache survives across navigation away and back.
         self._model_catalog = ModelCatalog()
@@ -68,20 +72,33 @@ class CleanupPage(ConfigPage):
         # Rules — style + warm-up
         rules_page = QtWidgets.QWidget()
         rules_layout = QtWidgets.QFormLayout(rules_page)
+        rules_layout.addRow(
+            QtWidgets.QLabel("Offline punctuation and filler-word cleanup. No API key needed.")
+        )
         self._rules_style = QtWidgets.QComboBox()
         for label, value in _STYLE_OPTIONS[:5]:
             self._rules_style.addItem(label, value)
         rules_layout.addRow("Style:", self._rules_style)
+        rules_layout.setRowVisible(self._rules_style, not self._compact)
         self._rules_warm_up = QtWidgets.QCheckBox("Warm up at startup")
         self._rules_warm_up.setChecked(True)
         rules_layout.addRow("", self._rules_warm_up)
+        rules_layout.setRowVisible(self._rules_warm_up, not self._compact)
         self._stack.addWidget(rules_page)
 
         # LLM — endpoint + env + style
         llm_page = QtWidgets.QWidget()
         llm_layout = QtWidgets.QFormLayout(llm_page)
+        self._llm_preset = QtWidgets.QComboBox()
+        for label, url in LLM_PRESETS:
+            self._llm_preset.addItem(label, url)
+        self._llm_preset.addItem("Custom…", CUSTOM)
+        self._llm_preset.currentIndexChanged.connect(self._on_preset_changed)
+        llm_layout.addRow("Provider:", self._llm_preset)
+
         self._llm_endpoint = QtWidgets.QLineEdit()
         self._llm_endpoint.setPlaceholderText("https://api.openai.com/v1")
+        self._llm_endpoint.textChanged.connect(self._sync_preset)
         # Editing the endpoint invalidates any cached model list so the next
         # "Fetch models" call hits the new server.
         self._llm_endpoint.textChanged.connect(lambda _t: self._model_catalog.clear_cache())
@@ -110,11 +127,15 @@ class CleanupPage(ConfigPage):
         # Editing the env-var name invalidates the model cache too — the
         # cached entry was fetched with the old key.
         self._llm_api_key_env.textChanged.connect(lambda _t: self._model_catalog.clear_cache())
+        self._llm_api_key_env.textChanged.connect(lambda _t: self._llm_api_key.refresh())
+        self._llm_endpoint.textChanged.connect(lambda _t: self._llm_api_key.refresh())
         env_row.addWidget(self._llm_api_key_env)
-        self._llm_env_helper_btn = QtWidgets.QPushButton("Set API key…")
-        self._llm_env_helper_btn.clicked.connect(self._on_open_env_helper)
-        env_row.addWidget(self._llm_env_helper_btn)
         llm_layout.addRow("Env var name:", env_row)
+        llm_layout.setRowVisible(env_row, not self._compact)
+
+        self._llm_api_key = ApiKeyField(self._key_env_name)
+        self._llm_api_key.key_changed.connect(lambda _n: self._model_catalog.clear_cache())
+        llm_layout.addRow("API key:", self._llm_api_key)
 
         # Status line for fetch errors. Hidden by default; shown after a
         # failed fetch with the error message.
@@ -128,12 +149,14 @@ class CleanupPage(ConfigPage):
         for label, value in _STYLE_OPTIONS:
             self._llm_style.addItem(label, value)
         llm_layout.addRow("Style:", self._llm_style)
+        llm_layout.setRowVisible(self._llm_style, not self._compact)
 
         self._llm_preserve_code = QtWidgets.QCheckBox(
             "Preserve code identifiers / URLs / file paths"
         )
         self._llm_preserve_code.setChecked(True)
         llm_layout.addRow("", self._llm_preserve_code)
+        llm_layout.setRowVisible(self._llm_preserve_code, not self._compact)
 
         prompt_row = QtWidgets.QHBoxLayout()
         self._llm_prompt_path = QtWidgets.QLineEdit()
@@ -143,10 +166,12 @@ class CleanupPage(ConfigPage):
         prompt_btn.clicked.connect(self._on_browse_prompt)
         prompt_row.addWidget(prompt_btn)
         llm_layout.addRow("Custom prompt file:", prompt_row)
+        llm_layout.setRowVisible(prompt_row, not self._compact)
 
         self._llm_warm_up = QtWidgets.QCheckBox("Warm up connection at startup")
         self._llm_warm_up.setChecked(True)
         llm_layout.addRow("", self._llm_warm_up)
+        llm_layout.setRowVisible(self._llm_warm_up, not self._compact)
 
         self._stack.addWidget(llm_page)
 
@@ -159,14 +184,22 @@ class CleanupPage(ConfigPage):
 
     # ── Slots ──────────────────────────────────────────────────────────
 
-    def _on_open_env_helper(self) -> None:
-        name = self._llm_api_key_env.text().strip() or "OPENAI_API_KEY"
-        dialog = EnvHelperDialog(name, self)
-        # Keep the env-var field in sync with whatever name the user settled
-        # on inside the dialog. Without this the controller would still see
-        # the old name even after the user picked a new one.
-        dialog.env_var_changed.connect(self._llm_api_key_env.setText)
-        dialog.exec()
+    def _key_env_name(self) -> str | None:
+        """Env var holding the LLM key: explicit name, else one per host."""
+        return self._llm_api_key_env.text().strip() or keystore.default_key_env(
+            self._llm_endpoint.text().strip(), "cleanup"
+        )
+
+    def _on_preset_changed(self, _index: int) -> None:
+        url = self._llm_preset.currentData()
+        if url and url != CUSTOM and self._llm_endpoint.text().strip() != url:
+            self._llm_endpoint.setText(url)
+
+    def _sync_preset(self, text: str = "") -> None:
+        idx = self._llm_preset.findData(preset_for(text, LLM_PRESETS))
+        self._llm_preset.blockSignals(True)
+        self._llm_preset.setCurrentIndex(idx)
+        self._llm_preset.blockSignals(False)
 
     def _on_browse_prompt(self) -> None:
         start = str(self._llm_prompt_path.text() or "")
@@ -181,15 +214,11 @@ class CleanupPage(ConfigPage):
         if self._fetch_in_flight:
             return
         endpoint = self._llm_endpoint.text().strip() or "https://api.openai.com/v1"
-        env_var = self._llm_api_key_env.text().strip()
+        self._llm_api_key.commit_pending()
+        env_var = self._key_env_name() or ""
+        # Some hosts (e.g. OpenRouter) list models without a key, so try anyway.
         api_key = os.environ.get(env_var) if env_var else None
-        if env_var and not api_key:
-            self._show_model_status(
-                f"Env var '{env_var}' is not set. "
-                "Click 'Set API key…' or set it in your shell, then retry.",
-                error=True,
-            )
-            return
+        self._missing_key_hint = bool(env_var and not api_key)
 
         self._fetch_in_flight = True
         self._llm_fetch_models_btn.setEnabled(False)
@@ -210,6 +239,8 @@ class CleanupPage(ConfigPage):
         self._llm_fetch_models_btn.setEnabled(True)
         self._llm_fetch_models_btn.setText("Fetch models…")
         if error is not None:
+            if getattr(self, "_missing_key_hint", False):
+                error += " Paste your API key above and click 'Save key', then retry."
             self._show_model_status(error, error=True)
             return
         # Preserve the user's currently-selected/typed id so we don't blow it
@@ -274,6 +305,8 @@ class CleanupPage(ConfigPage):
         finally:
             self._llm_model.blockSignals(False)
         self._llm_api_key_env.setText(c.api_key_env or "")
+        self._sync_preset(self._llm_endpoint.text())
+        self._llm_api_key.refresh()
         self._set_combo(self._llm_style, c.style)
         self._llm_preserve_code.setChecked(c.preserve_code)
         self._llm_prompt_path.setText(c.custom_prompt_path or "")
@@ -292,11 +325,12 @@ class CleanupPage(ConfigPage):
             # Combobox is editable: ``resolve_editable_combo_id`` picks the
             # right id (see its docstring).
             model_value = resolve_editable_combo_id(self._llm_model)
+            self._llm_api_key.commit_pending()
             cleanup = {
                 "provider": "openai_compatible",
                 "model": (model_value or "").strip() or None,
                 "endpoint": self._llm_endpoint.text().strip() or None,
-                "api_key_env": self._llm_api_key_env.text().strip() or None,
+                "api_key_env": self._key_env_name(),
                 "style": self._llm_style.currentData() or "standard",
                 "preserve_code": self._llm_preserve_code.isChecked(),
                 "custom_prompt_path": self._llm_prompt_path.text().strip() or None,

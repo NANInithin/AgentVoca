@@ -21,12 +21,38 @@ from agentvoca.setup.controllers.config_controller import load_controller  # noq
 from agentvoca.setup.wizard import SetupWizard  # noqa: E402
 
 
-def test_wizard_constructs_with_eight_pages(qapp, tmp_path: Path):
+def test_wizard_asks_only_model_and_api_questions(qapp, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     controller = load_controller(config_path)
     wizard = SetupWizard(controller)
-    # Welcome + 7 main pages + Finish = 9 total.
-    assert len(wizard._pages) == 9
+    names = [page.__class__.__name__ for page in wizard._pages]
+    assert names == ["WelcomePage", "AsrPage", "CleanupPage"]
+
+    asr_page, cleanup_page = wizard._pages[1], wizard._pages[2]
+    # Tuning options stay in Settings; the wizard keeps model + API key.
+    assert not asr_page._streaming.isVisibleTo(asr_page)  # type: ignore[attr-defined]
+    assert asr_page._language_hint.isHidden()  # type: ignore[attr-defined]
+    assert asr_page._api_key_env.isHidden()  # type: ignore[attr-defined]
+    assert not asr_page._api_key.isHidden()  # type: ignore[attr-defined]
+    assert cleanup_page._llm_prompt_path.isHidden()  # type: ignore[attr-defined]
+    assert cleanup_page._llm_style.isHidden()  # type: ignore[attr-defined]
+    assert not cleanup_page._llm_api_key.isHidden()  # type: ignore[attr-defined]
+    wizard.deleteLater()
+
+
+def test_provider_preset_fills_endpoint_and_key_name(qapp, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-dummy")
+    controller = load_controller(tmp_path / "config.yaml")
+    wizard = SetupWizard(controller)
+    asr_page = wizard._pages[1]
+    asr_page.load_from_controller()
+    asr_page._cloud_btn.setChecked(True)  # type: ignore[attr-defined]
+    preset = asr_page._preset  # type: ignore[attr-defined]
+    preset.setCurrentIndex(preset.findText("Groq"))
+    asr_page._api_model.setEditText("whisper-large-v3")  # type: ignore[attr-defined]
+    asr_page.save_to_controller()
+    assert controller.draft.asr.endpoint == "https://api.groq.com/openai/v1"
+    assert controller.draft.asr.api_key_env == "GROQ_API_KEY"
     wizard.deleteLater()
 
 
@@ -78,13 +104,11 @@ def test_wizard_preserves_typed_values_across_navigation(qapp, tmp_path: Path, m
     controller = load_controller(config_path)
     wizard = SetupWizard(controller)
 
-    # The ASR page is the 4th page in the wizard (page id 3 in
-    # ``pageIds()``). Walk the wizard forward to that page.
-    for wid in range(0, 4):
+    # Walk the wizard forward to the ASR page (page id 1).
+    for wid in range(0, 2):
         wizard._on_current_changed(wid)  # type: ignore[arg-type]
 
-    # ASR is now the current page.
-    asr_page = wizard._pages[3]
+    asr_page = wizard._pages[1]
     assert asr_page.__class__.__name__ == "AsrPage"
 
     # Simulate the user picking the cloud provider, typing the OpenRouter
@@ -96,11 +120,11 @@ def test_wizard_preserves_typed_values_across_navigation(qapp, tmp_path: Path, m
     asr_page._api_model.setEditText("openai/gpt-4o-mini")  # type: ignore[attr-defined]
     asr_page._api_key_env.setText("OPENROUTER_API_KEY")  # type: ignore[attr-defined]
 
-    # Click Next — the slot fires with the new id (4 = Cleanup). Before the
+    # Click Next — the slot fires with the new id (2 = Cleanup). Before the
     # fix this would have rebound every page from the controller's existing
     # draft, which still had provider='faster_whisper', silently throwing
     # away the typed values.
-    wizard._on_current_changed(4)  # type: ignore[arg-type]
+    wizard._on_current_changed(2)  # type: ignore[arg-type]
 
     # The controller must now reflect what the user typed — not the loaded
     # disk defaults.
@@ -111,7 +135,7 @@ def test_wizard_preserves_typed_values_across_navigation(qapp, tmp_path: Path, m
     assert draft.asr.api_key_env == "OPENROUTER_API_KEY", draft.asr
 
     # Now also type into Cleanup and navigate again — ASR must not be lost.
-    cleanup_index = 4
+    cleanup_index = 2
     cleanup_page = wizard._pages[cleanup_index]
     cleanup_page._llm_btn.setChecked(True)  # type: ignore[attr-defined]
     cleanup_page._llm_endpoint.setText("https://openrouter.ai/api/v1")  # type: ignore[attr-defined]
@@ -121,7 +145,7 @@ def test_wizard_preserves_typed_values_across_navigation(qapp, tmp_path: Path, m
     # on the LLM combo box.
     cleanup_page._llm_style.setCurrentIndex(3)  # type: ignore[attr-defined]
 
-    wizard._on_current_changed(5)  # type: ignore[arg-type]  — Hotkeys
+    wizard._on_current_changed(1)  # type: ignore[arg-type]  — back to ASR
 
     # Both ASR and cleanup must reflect what the user typed.
     assert controller.draft.asr.provider == "openai_compatible"
@@ -131,37 +155,20 @@ def test_wizard_preserves_typed_values_across_navigation(qapp, tmp_path: Path, m
     wizard.deleteLater()
 
 
-def test_wizard_navigation_does_not_clobber_other_pages(qapp, tmp_path: Path):
-    """A page the user has not visited must keep whatever the controller had
-    in it. The old behavior rebound every page on every navigation, which
-    is fine for unchanged pages but a footgun for pages the user *has*
-    visited and left with new values that have not yet been saved.
-    """
+def test_wizard_keeps_settings_it_does_not_ask_about(qapp, tmp_path: Path):
+    """Options the wizard no longer shows keep whatever the config had."""
     config_path = tmp_path / "config.yaml"
     controller = load_controller(config_path)
+    controller.update_section(audio={"silence_timeout_ms": 1500})
+    controller.update_section(cleanup={"style": "technical"})
     wizard = SetupWizard(controller)
 
-    # Walk forward to the audio page (page id 2).
     for wid in range(0, 3):
         wizard._on_current_changed(wid)  # type: ignore[arg-type]
+    for page in wizard._pages:
+        page.save_to_controller()
 
-    audio_page = wizard._pages[2]
-    audio_page._silence_timeout.setValue(1500)  # type: ignore[attr-defined]
-
-    # Navigate to the next page. The audio page's typed value must be
-    # captured into the controller before the ASR page is rebound.
-    wizard._on_current_changed(3)  # type: ignore[arg-type]
     assert controller.draft.audio.silence_timeout_ms == 1500
-
-    # Navigate further (Cleanup). Audio must still be 1500.
-    wizard._on_current_changed(4)  # type: ignore[arg-type]
-    assert controller.draft.audio.silence_timeout_ms == 1500
-    # ASR is still on the default provider — we did not touch it.
+    assert controller.draft.cleanup.style == "technical"
     assert controller.draft.asr.provider == "faster_whisper"
-
-    # Navigate back to the audio page. The widget should be rebound from
-    # the controller, which now holds 1500ms.
-    wizard._on_current_changed(2)  # type: ignore[arg-type]
-    assert audio_page._silence_timeout.value() == 1500  # type: ignore[attr-defined]
-
     wizard.deleteLater()

@@ -1,8 +1,8 @@
 """Setup wizard — ``QWizard`` composing the page widgets in order.
 
-The wizard auto-opens on every launch (per the v0.3.5 decision). Users can
-opt out via the checkbox on the Welcome page, which persists to
-``state.json``.
+The wizard opens on first run and when the saved config cannot be loaded.
+It only asks for the speech-to-text model, the cleanup model and their API
+keys; every other option keeps its default and lives in the Settings window.
 
 Usage::
 
@@ -20,18 +20,8 @@ from typing import TYPE_CHECKING
 from PySide6 import QtCore, QtWidgets
 
 from agentvoca import __version__
-from agentvoca.setup.first_run import mark_first_run_complete, set_wizard_auto_open
-from agentvoca.setup.pages import (
-    AdvancedPage,
-    AppBasicsPage,
-    AsrPage,
-    AudioPage,
-    CleanupPage,
-    FinishPage,
-    HotkeysPage,
-    VocabSnippetsPage,
-    WelcomePage,
-)
+from agentvoca.setup.first_run import mark_first_run_complete
+from agentvoca.setup.pages import AsrPage, CleanupPage, WelcomePage
 from agentvoca.setup.pages.base import ConfigPage
 
 if TYPE_CHECKING:
@@ -56,14 +46,14 @@ def _as_wizard_page(widget: ConfigPage) -> QtWidgets.QWizardPage:
     """Wrap a ``ConfigPage`` so it can be added to a ``QWizard``.
 
     ``QWizard.addPage`` requires ``QWizardPage`` instances. The wizard
-    delegates ``isComplete`` to the wrapped page so the validation on
-    ``FinishPage`` still blocks navigation.
+    delegates ``isComplete`` to the wrapped page so page validation still
+    blocks navigation.
     """
     return _PageWrapper(widget)
 
 
 class SetupWizard(QtWidgets.QWizard):
-    """The full first-run wizard with eight pages + welcome + review."""
+    """First-run wizard: welcome, speech-to-text model, cleanup model."""
 
     # Emitted on a successful save. The payload is the freshly-written
     # ``FullConfig`` so the host application can hot-apply supported fields.
@@ -84,20 +74,14 @@ class SetupWizard(QtWidgets.QWizard):
         self.setOption(QtWidgets.QWizard.WizardOption.NoCancelButton, False)
         self.resize(720, 600)
 
-        welcome = WelcomePage(controller)
+        welcome = WelcomePage(controller, compact=True)
         self._welcome = welcome
         if startup_warning:
             welcome.show_startup_warning(startup_warning)
         self._pages = [
             welcome,
-            AppBasicsPage(controller),
-            AudioPage(controller),
-            AsrPage(controller),
-            CleanupPage(controller),
-            HotkeysPage(controller),
-            VocabSnippetsPage(controller),
-            AdvancedPage(controller),
-            FinishPage(controller),
+            AsrPage(controller, compact=True),
+            CleanupPage(controller, compact=True),
         ]
         # Parallel list of QWizardPage wrappers so we can map wizard-id back
         # to the underlying ConfigPage index when handling navigation.
@@ -142,7 +126,6 @@ class SetupWizard(QtWidgets.QWizard):
             save_result = self._controller.save()
             if save_result.success:
                 mark_first_run_complete(__version__)
-                set_wizard_auto_open(self._welcome.auto_open_enabled)
                 logger.info(
                     "Wizard saved config (hot=%d, restart=%d)",
                     len(save_result.hot_paths),

@@ -504,9 +504,6 @@ class TestMainStartupWithObserver:
             set_observer_available=lambda *a, **k: None,
         )
 
-        from agentvoca.setup.first_run import AppState
-
-        monkeypatch.setattr(m, "load_state", lambda: AppState(wizard_auto_open=False))
         monkeypatch.setattr(m, "QtWidgets", SimpleNamespace(QApplication=FakeApp))
         monkeypatch.setattr(m, "SetupWizard", FakeWizard)
         monkeypatch.setattr(m, "SettingsWindow", MagicMock())
@@ -622,9 +619,6 @@ class TestMainStartupWithObserver:
             def stop(self) -> None:
                 pass
 
-        from agentvoca.setup.first_run import AppState
-
-        monkeypatch.setattr(m, "load_state", lambda: AppState(wizard_auto_open=False))
         monkeypatch.setattr(m, "QtWidgets", SimpleNamespace(QApplication=FakeApp))
         monkeypatch.setattr(m, "SetupWizard", FakeWizard)
         monkeypatch.setattr(m, "SettingsWindow", MagicMock())

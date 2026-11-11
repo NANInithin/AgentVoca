@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtWidgets
 
+from agentvoca import keystore
 from agentvoca.config.schema import ObserverConfig
+from agentvoca.setup.pages.api_key_field import ApiKeyField
 from agentvoca.setup.pages.base import ConfigPage
 
 # Default exclusion lists, kept in sync with the schema's defaults
@@ -153,6 +155,10 @@ class ObserverPage(ConfigPage):
         self._ocr_api_key_env = QtWidgets.QLineEdit()
         self._ocr_api_key_env.setPlaceholderText("OPENAI_API_KEY")
         ocr_form.addRow("API key env var:", self._ocr_api_key_env)
+        self._ocr_api_key = ApiKeyField(lambda: self._key_env_name("ocr"))
+        self._ocr_api_key_env.textChanged.connect(lambda _t: self._ocr_api_key.refresh())
+        self._ocr_endpoint.textChanged.connect(lambda _t: self._ocr_api_key.refresh())
+        ocr_form.addRow("API key:", self._ocr_api_key)
         self._ocr_max_queue = QtWidgets.QSpinBox()
         self._ocr_max_queue.setRange(4, 256)
         ocr_form.addRow("OCR queue size:", self._ocr_max_queue)
@@ -187,6 +193,10 @@ class ObserverPage(ConfigPage):
         self._compile_api_key_env = QtWidgets.QLineEdit()
         self._compile_api_key_env.setPlaceholderText("OPENAI_API_KEY")
         comp_form.addRow("API key env var:", self._compile_api_key_env)
+        self._compile_api_key = ApiKeyField(lambda: self._key_env_name("compile"))
+        self._compile_api_key_env.textChanged.connect(lambda _t: self._compile_api_key.refresh())
+        self._compile_endpoint.textChanged.connect(lambda _t: self._compile_api_key.refresh())
+        comp_form.addRow("API key:", self._compile_api_key)
         # Output formats
         self._format_checks: dict[str, QtWidgets.QCheckBox] = {}
         fmt_row = QtWidgets.QHBoxLayout()
@@ -268,6 +278,8 @@ class ObserverPage(ConfigPage):
         self._compile_endpoint.setText(c.compile.endpoint or "")
         self._compile_model.setText(c.compile.model or "")
         self._compile_api_key_env.setText(c.compile.api_key_env or "")
+        self._ocr_api_key.refresh()
+        self._compile_api_key.refresh()
         # Output formats: list -> checks
         for value, cb in self._format_checks.items():
             cb.setChecked(value in c.compile.formats)
@@ -276,6 +288,23 @@ class ObserverPage(ConfigPage):
             self._list_to_text(list(c.privacy.exclude_title_patterns))
         )
         self._update_cloud_warning()
+
+    def _key_env_name(self, role: str) -> str | None:
+        env_edit = self._ocr_api_key_env if role == "ocr" else self._compile_api_key_env
+        endpoint = self._ocr_endpoint if role == "ocr" else self._compile_endpoint
+        return env_edit.text().strip() or keystore.default_key_env(
+            endpoint.text().strip(), f"observer_{role}"
+        )
+
+    def _saved_key_env(self, role: str) -> str | None:
+        """Explicit env var name, else the derived one once a key is saved."""
+        env_edit = self._ocr_api_key_env if role == "ocr" else self._compile_api_key_env
+        field = self._ocr_api_key if role == "ocr" else self._compile_api_key
+        field.commit_pending()
+        if env_edit.text().strip():
+            return env_edit.text().strip()
+        name = self._key_env_name(role)
+        return name if name and keystore.key_status(name).source else None
 
     def save_to_controller(self) -> None:
         formats = [v for v, cb in self._format_checks.items() if cb.isChecked()]
@@ -301,7 +330,7 @@ class ObserverPage(ConfigPage):
                     "provider": self._ocr_provider.currentData() or "rapidocr",
                     "endpoint": self._ocr_endpoint.text().strip() or None,
                     "model": self._ocr_model.text().strip() or None,
-                    "api_key_env": self._ocr_api_key_env.text().strip() or None,
+                    "api_key_env": self._saved_key_env("ocr"),
                     "max_queue": self._ocr_max_queue.value(),
                 },
                 "selection": {
@@ -312,7 +341,7 @@ class ObserverPage(ConfigPage):
                     "provider": self._compile_provider.currentData() or "rules",
                     "endpoint": self._compile_endpoint.text().strip() or None,
                     "model": self._compile_model.text().strip() or None,
-                    "api_key_env": self._compile_api_key_env.text().strip() or None,
+                    "api_key_env": self._saved_key_env("compile"),
                     "formats": formats,
                 },
                 "privacy": {

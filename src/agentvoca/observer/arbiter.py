@@ -85,6 +85,10 @@ class ASRArbiter:
         self._on_drop: Callable[[int], None] | None = None
         self._is_session_current = is_session_current
 
+    def set_provider(self, provider: ASRProvider) -> None:
+        """Swap the shared provider. In-flight calls finish on the old one."""
+        self._provider = provider
+
     def set_on_drop(self, callback: Callable[[int], None]) -> None:
         self._on_drop = callback
 

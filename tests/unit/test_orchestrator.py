@@ -288,6 +288,47 @@ class TestOrchestratorHappyPath:
         assert last_insert.method_used == "keyboard"
 
 
+class TestAsrHotReload:
+    """Changing the speech model from the wizard applies without a restart."""
+
+    async def test_asr_model_change_swaps_provider(
+        self, orchestrator: Orchestrator, minimal_config: FullConfig
+    ) -> None:
+        old_provider = orchestrator._asr_provider
+        new_config = minimal_config.model_copy(
+            update={"asr": minimal_config.asr.model_copy(update={"model": "new-model"})}
+        )
+        orchestrator.apply_config_update(new_config)
+
+        assert orchestrator._asr_provider is not old_provider
+        assert orchestrator._asr_provider.config.model == "new-model"
+
+    async def test_asr_reload_updates_arbiter(
+        self, orchestrator: Orchestrator, minimal_config: FullConfig
+    ) -> None:
+        from agentvoca.observer.arbiter import ASRArbiter
+
+        arbiter = ASRArbiter(provider=orchestrator._asr_provider)
+        orchestrator.attach_asr_arbiter(arbiter)
+        new_config = minimal_config.model_copy(
+            update={"asr": minimal_config.asr.model_copy(update={"model": "new-model"})}
+        )
+        orchestrator.apply_config_update(new_config)
+
+        assert arbiter._provider is orchestrator._asr_provider
+
+    async def test_streaming_change_alone_keeps_provider(
+        self, orchestrator: Orchestrator, minimal_config: FullConfig
+    ) -> None:
+        old_provider = orchestrator._asr_provider
+        new_config = minimal_config.model_copy(
+            update={"asr": minimal_config.asr.model_copy(update={"streaming": True})}
+        )
+        orchestrator.apply_config_update(new_config)
+
+        assert orchestrator._asr_provider is old_provider
+
+
 class TestOrchestratorFallbackPaths:
     """Fallback behavior per §8."""
 
@@ -314,6 +355,7 @@ class TestOrchestratorFallbackPaths:
         await orch.start()
 
         cleaned_events = EventCollector(event_bus, CleanedTextEvent)
+        error_events = EventCollector(event_bus, ErrorEvent)
 
         event_bus.publish(recording_stopped_event)
         await asyncio.sleep(1.0)
@@ -322,6 +364,10 @@ class TestOrchestratorFallbackPaths:
         fallback_events = [e for e in cleaned_events.events if e.used_fallback]
         assert len(fallback_events) >= 1
         assert fallback_events[-1].text == "hello world this is a test"
+        cleanup_errors = [e for e in error_events.events if e.stage == "cleanup"]
+        assert len(cleanup_errors) == 1
+        assert cleanup_errors[0].recoverable is True
+        assert "Always fails" in cleanup_errors[0].message
 
         await orch.stop()
 

@@ -10,9 +10,11 @@ from agentvoca.setup.controllers.restart_policy import (
 )
 
 
-def test_asr_provider_requires_restart():
-    assert is_restart_field("asr.provider")
-    assert not is_hot_field("asr.provider")
+def test_asr_provider_is_hot_but_streaming_requires_restart():
+    for path in ("asr.provider", "asr.model", "asr.endpoint", "asr.api_key_env"):
+        assert is_hot_field(path)
+        assert not is_restart_field(path)
+    assert is_restart_field("asr.streaming")
 
 
 def test_cleanup_provider_is_hot():
@@ -65,11 +67,11 @@ def test_vision_enable_requires_restart_but_runtime_knobs_are_hot():
 
 
 def test_partition_splits_correctly():
-    paths = ["asr.provider", "cleanup.style", "hotkeys.toggle_recording", "audio.sample_rate"]
+    paths = ["asr.streaming", "cleanup.style", "hotkeys.toggle_recording", "audio.sample_rate"]
     hot, restart = partition(paths)
     assert "cleanup.style" in hot
     assert "hotkeys.toggle_recording" in hot
-    assert "asr.provider" in restart
+    assert "asr.streaming" in restart
     assert "audio.sample_rate" in restart
 
 
@@ -102,7 +104,8 @@ def test_list_index_subpaths_inherit_the_parent_fields_classification():
 
 def test_all_known_paths_cover_every_field():
     hot, restart = all_known_paths()
-    assert "asr.provider" in restart
+    assert "asr.provider" in hot
+    assert "asr.streaming" in restart
     assert "cleanup.provider" in hot
     assert "hotkeys.toggle_recording" in hot
     # No overlap.

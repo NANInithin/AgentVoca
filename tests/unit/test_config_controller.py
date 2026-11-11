@@ -92,11 +92,11 @@ def test_controller_save_persists_to_disk(tmp_path: Path):
 
 def test_controller_save_returns_hot_and_restart_paths(tmp_path: Path):
     c = load_controller(tmp_path / "nope.yaml")
-    c.update_section(cleanup={"style": "technical"}, asr={"model": "large-v3"})
+    c.update_section(cleanup={"style": "technical"}, asr={"streaming": True})
     result = c.save()
     assert result.success
     assert "cleanup.style" in result.hot_paths
-    assert "asr.model" in result.restart_paths
+    assert "asr.streaming" in result.restart_paths
 
 
 def test_controller_save_makes_backup(tmp_path: Path):

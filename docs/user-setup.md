@@ -56,8 +56,9 @@ surfaces a banner listing every field that needs a relaunch.
 
 | Hot-applied (no restart) | Requires restart |
 |---|---|
-| Cleanup provider / style | ASR provider / model |
-| Hotkeys | Audio device / sample rate / VAD |
+| Speech-to-text provider / model / endpoint / key | Speech-to-text streaming (live preview) |
+| Cleanup provider / style | Audio device / sample rate / VAD |
+| Hotkeys | |
 | Vocabulary & snippets | Insertion strategy |
 | Adaptive vocab | Vision enable / provider |
 | Context profiles | App mode / language / profile |

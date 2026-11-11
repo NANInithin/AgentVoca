@@ -255,9 +255,12 @@ def test_observer_menu_disabled_until_available(qapp) -> None:
         tray.set_observer_available(True)
         assert tray._observer_menu.isEnabled() is True
         assert tray._observer_menu.title() == "Observer"
+        assert tray.open_last_action.isVisible() is True
+        assert tray.delete_all_action.isVisible() is True
 
         tray.set_observer_available(False, reason="enable in Settings")
         assert tray._observer_menu.isEnabled() is False
         assert "enable in Settings" in tray._observer_menu.title()
+        assert tray.open_last_action.isVisible() is False
     finally:
         tray.stop()

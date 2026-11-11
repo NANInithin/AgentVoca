@@ -857,6 +857,40 @@ def main(argv: list[str] | None = None) -> int:
     tray.open_wizard_action.triggered.connect(open_wizard)
     tray.quit_action.triggered.connect(app.quit)
 
+    def open_last_observer_session() -> None:
+        from PySide6 import QtGui  # noqa: PLC0415
+
+        out_dir = Path(controller.draft.observer.resolved_output_dir).expanduser()
+        exports = sorted(out_dir.glob("*/session.md"), key=lambda p: p.stat().st_mtime)
+        if not exports:
+            tray.show_message("Observer", "No compiled sessions yet.")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(exports[-1])))
+
+    def delete_all_observer_sessions() -> None:
+        if observer_controller is None:
+            return
+        if observer_controller.is_active:  # type: ignore[attr-defined]
+            tray.show_message("Observer", "Stop the current session before deleting sessions.")
+            return
+        confirm = QtWidgets.QMessageBox.question(
+            None,
+            "Delete all Observer sessions?",
+            "This permanently deletes every recorded session and its exports.",
+        )
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            count = observer_controller.store.purge_all()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Deleting Observer sessions failed")
+            tray.show_message("Observer", "Could not delete sessions.", icon=2)
+            return
+        tray.show_message("Observer", f"Deleted {count} session(s).")
+
+    tray.open_last_action.triggered.connect(open_last_observer_session)
+    tray.delete_all_action.triggered.connect(delete_all_observer_sessions)
+
     def on_error(event: object) -> None:
         message = getattr(event, "message", "Unknown error")
         stage = getattr(event, "stage", "unknown")

@@ -291,6 +291,8 @@ class TrayApp(QtCore.QObject):
         """
         self._observer_available = available
         self._observer_menu.setEnabled(available)
+        self._open_last_action.setVisible(available)
+        self._delete_all_action.setVisible(available)
         if available:
             self._observer_menu.setTitle("Observer")
         else:

@@ -163,3 +163,17 @@ def test_controller_changed_paths_include_top_level_for_dict_changes(tmp_path: P
     paths = c.changed_paths()
     # Top-level diff: vocabulary.inline is detected.
     assert "vocabulary.inline" in paths or "vocabulary" in paths
+
+
+def test_removing_map_entries_replaces_the_mapping(tmp_path: Path):
+    controller = defaults_controller(tmp_path / "config.yaml")
+    controller.update_section(
+        snippets={"inline": {"birch": "BIRCH", "oak": "OAK"}},
+        context={"profiles": {"code.exe": "technical"}},
+    )
+    controller.update_section(
+        snippets={"path": None, "inline": {"oak": "OAK"}},
+        context={"profiles": {}},
+    )
+    assert controller.draft.snippets.inline == {"oak": "OAK"}
+    assert controller.draft.context.profiles == {}

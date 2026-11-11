@@ -933,6 +933,12 @@ class Orchestrator:
                 CleanedTextEvent(text=transcript, used_fallback=True, latency_ms=0)
             )
             self._state_machine.transition("ErrorEvent", stage="cleanup")
+            self._emit_error(
+                stage="cleanup",
+                message="Cleanup model is not set up (missing endpoint or API key); "
+                "typed the raw transcript.",
+                recoverable=True,
+            )
             return transcript
 
         # Resolve context before building CleanupContext
@@ -946,6 +952,7 @@ class Orchestrator:
             app_name=self._resolved_app_name,
         )
 
+        last_error: Optional[CleanupError] = None
         for attempt in range(1 + _CLEANUP_RETRIES):
             t0 = time.perf_counter()
             try:
@@ -962,6 +969,7 @@ class Orchestrator:
                 return cleaned
 
             except CleanupError as exc:
+                last_error = exc
                 logger.warning(
                     "Cleanup attempt %d/%d failed: %s", attempt + 1, 1 + _CLEANUP_RETRIES, exc
                 )
@@ -974,6 +982,12 @@ class Orchestrator:
         self._event_bus.publish(CleanedTextEvent(text=transcript, used_fallback=True, latency_ms=0))
         self._state_machine.transition("ErrorEvent", stage="cleanup")
         self._cleanup_success = False
+        self._emit_error(
+            stage="cleanup",
+            message=f"Cleanup failed; typed the raw transcript. {last_error}",
+            recoverable=True,
+            detail=str(last_error) if last_error else None,
+        )
         return transcript
 
     async def _run_insertion(self, text: str) -> None:

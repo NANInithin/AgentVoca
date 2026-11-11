@@ -314,6 +314,7 @@ class TestOrchestratorFallbackPaths:
         await orch.start()
 
         cleaned_events = EventCollector(event_bus, CleanedTextEvent)
+        error_events = EventCollector(event_bus, ErrorEvent)
 
         event_bus.publish(recording_stopped_event)
         await asyncio.sleep(1.0)
@@ -322,6 +323,10 @@ class TestOrchestratorFallbackPaths:
         fallback_events = [e for e in cleaned_events.events if e.used_fallback]
         assert len(fallback_events) >= 1
         assert fallback_events[-1].text == "hello world this is a test"
+        cleanup_errors = [e for e in error_events.events if e.stage == "cleanup"]
+        assert len(cleanup_errors) == 1
+        assert cleanup_errors[0].recoverable is True
+        assert "Always fails" in cleanup_errors[0].message
 
         await orch.stop()
 

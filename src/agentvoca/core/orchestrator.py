@@ -959,6 +959,12 @@ class Orchestrator:
                 cleaned = await self._cleanup_provider.rewrite(transcript, context=cleanup_context)
                 elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
+                logger.info(
+                    "Cleanup done by %s in %d ms (text %s)",
+                    self._cleanup_provider.get_name(),
+                    elapsed_ms,
+                    "changed" if cleaned != transcript else "unchanged",
+                )
                 self._event_bus.publish(TimingEvent(stage="cleanup", duration_ms=elapsed_ms))
                 self._event_bus.publish(
                     CleanedTextEvent(text=cleaned, used_fallback=False, latency_ms=elapsed_ms)

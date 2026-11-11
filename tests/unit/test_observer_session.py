@@ -498,6 +498,8 @@ class TestMainStartupWithObserver:
             open_settings_action=SimpleNamespace(triggered=MagicMock()),
             open_wizard_action=SimpleNamespace(triggered=MagicMock()),
             quit_action=SimpleNamespace(triggered=MagicMock()),
+            open_last_action=SimpleNamespace(triggered=MagicMock()),
+            delete_all_action=SimpleNamespace(triggered=MagicMock()),
             show_message=lambda *a, **k: None,
             # main.py calls this once it knows whether an
             # ObserverController was built (v0.4.0).
@@ -541,6 +543,8 @@ class TestMainStartupWithObserver:
             open_settings_action=SimpleNamespace(triggered=MagicMock()),
             open_wizard_action=SimpleNamespace(triggered=MagicMock()),
             quit_action=SimpleNamespace(triggered=MagicMock()),
+            open_last_action=SimpleNamespace(triggered=MagicMock()),
+            delete_all_action=SimpleNamespace(triggered=MagicMock()),
             show_message=lambda *a, **k: None,
             # main.py calls this once it knows whether an
             # ObserverController was built (v0.4.0).

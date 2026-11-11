@@ -13,9 +13,12 @@ this size.
 from __future__ import annotations
 
 import logging
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+from pydantic import BaseModel
 
 from agentvoca.config.schema import FullConfig
 from agentvoca.setup import persistence
@@ -121,7 +124,9 @@ class ConfigController:
             if value is None:
                 continue
             if isinstance(value, dict):
-                data[section] = _deep_merge(data.get(section) or {}, value)
+                data[section] = _deep_merge(
+                    data.get(section) or {}, value, _model_for(FullConfig, section)
+                )
             else:
                 data[section] = (
                     value.model_dump(exclude_defaults=False)
@@ -276,14 +281,34 @@ def _join(prefix: str, key: Any) -> str:
     return f"{prefix}.{key_str}"
 
 
-def _deep_merge(existing: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
-    """Apply page edits without erasing nested fields absent from the page."""
+def _model_for(model: Any, key: str) -> Any:
+    """Return the nested pydantic model class for ``model.key``, if it is one."""
+    fields = getattr(model, "model_fields", None)
+    if not fields or key not in fields:
+        return None
+    annotation = fields[key].annotation
+    candidates = (annotation, *typing.get_args(annotation))
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _deep_merge(
+    existing: dict[str, Any], changes: dict[str, Any], model: Any = None
+) -> dict[str, Any]:
+    """Apply page edits without erasing nested fields absent from the page.
+
+    Only nested config sections are merged; plain mappings such as
+    ``snippets.inline`` are replaced so removed entries stay removed.
+    """
     result = dict(existing)
     for key, value in changes.items():
         previous = result.get(key)
+        submodel = _model_for(model, key)
         result[key] = (
-            _deep_merge(previous, value)
-            if isinstance(previous, dict) and isinstance(value, dict)
+            _deep_merge(previous, value, submodel)
+            if submodel is not None and isinstance(previous, dict) and isinstance(value, dict)
             else value
         )
     return result

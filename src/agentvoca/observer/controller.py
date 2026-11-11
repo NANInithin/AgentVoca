@@ -445,6 +445,10 @@ class ObserverController:
         self._event_bus.publish(ObserverPausedEvent(paused=False, reason=reason))
 
     @property
+    def store(self) -> ObserverStore:
+        return self._store
+
+    @property
     def is_active(self) -> bool:
         return self._sessions.current is not None
 

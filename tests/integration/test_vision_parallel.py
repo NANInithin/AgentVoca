@@ -23,6 +23,7 @@ from agentvoca.config.schema import (
     VisionConfig,
 )
 from agentvoca.core.event_bus import EventBus
+from agentvoca.core.events import ErrorEvent
 from agentvoca.core.orchestrator import Orchestrator
 from agentvoca.core.registry import ProviderRegistry
 from agentvoca.core.types import (
@@ -186,10 +187,13 @@ async def test_one_shot_failure_does_not_block_others():
     registry = _build_registry(vision)
 
     splicer = _PassThroughSplicer()
+    bus = EventBus()
+    errors: list[ErrorEvent] = []
+    bus.subscribe(ErrorEvent, errors.append)
     orch = Orchestrator(
         config=_build_config(),
         registry=registry,
-        event_bus=EventBus(),
+        event_bus=bus,
         screenshot_capturer=_FakeCapturer(shots=[b"\x89PNG"] * 3),
     )
     orch._vision_enabled = True
@@ -203,6 +207,10 @@ async def test_one_shot_failure_does_not_block_others():
     assert had_vision is True
     # The splicer received them in input order.
     assert splicer.extractions == ["shot-0", None, "shot-2"]
+    assert len(errors) == 1
+    assert errors[0].stage == "vision"
+    assert errors[0].recoverable is True
+    assert "1 of 3" in errors[0].message
 
 
 @pytest.mark.asyncio

@@ -101,19 +101,25 @@ class VAD:
         if audio_float.ndim > 1:
             audio_float = audio_float.mean(axis=1)
 
+        # Score each fixed-size silero window directly. get_speech_timestamps
+        # needs >= 250 ms of speech per segment, so it never fires on a
+        # 64 ms capture block.
+        window = 512 if self._target_sample_rate == 16000 else 256
+        remainder = audio_float.size % window
+        if remainder:
+            audio_float = np.pad(audio_float, (0, window - remainder))
         try:
-            import silero_vad
+            import torch
 
-            speech_prob = silero_vad.get_speech_timestamps(
-                audio_float,
-                self._model,
-                threshold=self._threshold,
-                sampling_rate=self._target_sample_rate,
-                return_seconds=True,
-            )
-            # get_speech_timestamps returns a list of speech segments;
-            # non-empty list means speech detected
-            return len(speech_prob) > 0
+            with torch.no_grad():
+                for start in range(0, audio_float.size, window):
+                    chunk = torch.from_numpy(
+                        np.ascontiguousarray(audio_float[start : start + window])
+                    )
+                    prob = float(self._model(chunk, self._target_sample_rate).item())  # type: ignore[operator]
+                    if prob >= self._threshold:
+                        return True
+            return False
         except Exception as exc:
             logger.warning("VAD inference failed: %s", exc)
             return True  # Default to speech on error

@@ -99,13 +99,28 @@ class HotkeyManager:
         self._event_bus = event_bus
         self._listener: Optional[keyboard.Listener] = None
         self._hotkeys: list[keyboard.HotKey] = []
+        # (keys, action, held) for hotkeys that also fire when released.
+        self._release_bindings: list[tuple[frozenset, str, list[bool]]] = []
+        # Keys currently held, and deferred (keys, action) waiting for those keys up.
+        self._pressed: set[object] = set()
+        self._pending: list[tuple[frozenset, str]] = []
 
-    def register(self, hotkey_str: str, action: str) -> None:
+    def register(
+        self,
+        hotkey_str: str,
+        action: str,
+        emit_on_release: bool = False,
+        defer_until_released: bool = False,
+    ) -> None:
         """Register a hotkey to emit a specific action.
 
         Args:
             hotkey_str: Hotkey combination string (e.g. ``"ctrl+shift+z"``).
             action: The HotkeyEvent.action value to emit.
+            emit_on_release: Also emit ``action`` when any key of the
+                combination is released after it fired (push-to-talk).
+            defer_until_released: Emit only once every key is up, so actions
+                that type text are not combined with held modifiers.
         """
         try:
             pynput_str = _to_pynput_str(hotkey_str)
@@ -115,13 +130,24 @@ class HotkeyManager:
 
         # Capture action in the closure via a default-arg so each callback
         # holds its own copy.
+        held = [False]
+        combo: frozenset = frozenset()
+
         def on_activate(_action: str = action) -> None:
+            held[0] = True
             logger.info("Hotkey triggered: %s", _action)
-            self._event_bus.publish(HotkeyEvent(action=_action))  # type: ignore[arg-type]
+            if defer_until_released:
+                self._pending.append((combo, _action))
+            else:
+                self._event_bus.publish(HotkeyEvent(action=_action))  # type: ignore[arg-type]
 
         try:
-            hk = keyboard.HotKey(keyboard.HotKey.parse(pynput_str), on_activate)
+            keys = keyboard.HotKey.parse(pynput_str)
+            combo = frozenset(keys)
+            hk = keyboard.HotKey(keys, on_activate)
             self._hotkeys.append(hk)
+            if emit_on_release:
+                self._release_bindings.append((frozenset(keys), action, held))
             logger.debug("Registered hotkey: %s -> %s (pynput: %s)", hotkey_str, action, pynput_str)
         except Exception as exc:
             logger.warning("Failed to register hotkey %r: %s", hotkey_str, exc)
@@ -143,6 +169,7 @@ class HotkeyManager:
             if key is None or listener is None:
                 return
             canonical = listener.canonical(key)
+            self._pressed.add(canonical)
             for hk in tuple(self._hotkeys):
                 hk.press(canonical)
 
@@ -153,6 +180,7 @@ class HotkeyManager:
             canonical = listener.canonical(key)
             for hk in tuple(self._hotkeys):
                 hk.release(canonical)
+            self._dispatch_release(canonical)
 
         self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self._listener.start()
@@ -174,4 +202,19 @@ class HotkeyManager:
         if the listener itself needs to be replaced.
         """
         self._hotkeys.clear()
+        self._release_bindings.clear()
+        self._pending.clear()
         logger.debug("Cleared all registered hotkeys")
+
+    def _dispatch_release(self, key: object) -> None:
+        self._pressed.discard(key)
+        for keys, action, held in tuple(self._release_bindings):
+            if held[0] and key in keys:
+                held[0] = False
+                logger.info("Hotkey released: %s", action)
+                self._event_bus.publish(HotkeyEvent(action=action))  # type: ignore[arg-type]
+        for entry in tuple(self._pending):
+            keys, action = entry
+            if not keys & self._pressed:
+                self._pending.remove(entry)
+                self._event_bus.publish(HotkeyEvent(action=action))  # type: ignore[arg-type]

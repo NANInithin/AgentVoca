@@ -785,13 +785,19 @@ def main(argv: list[str] | None = None) -> int:
 
     def _register_hotkeys(manager: HotkeyManager, cfg: FullConfig) -> None:
         """Bind every configured hotkey on ``manager``."""
-        manager.register(cfg.hotkeys.toggle_recording, "toggle_recording")
+        manager.register(
+            cfg.hotkeys.toggle_recording,
+            "toggle_recording",
+            emit_on_release=cfg.app.mode == "push_to_talk",
+        )
         manager.register(cfg.hotkeys.cancel, "cancel")
         manager.register(cfg.hotkeys.open_settings, "open_settings")
         if cfg.hotkeys.insert_last_transcript:
-            manager.register(cfg.hotkeys.insert_last_transcript, "insert_last")
+            manager.register(
+                cfg.hotkeys.insert_last_transcript, "insert_last", defer_until_released=True
+            )
         if cfg.hotkeys.undo:
-            manager.register(cfg.hotkeys.undo, "undo")
+            manager.register(cfg.hotkeys.undo, "undo", defer_until_released=True)
         if cfg.vision.enabled and cfg.hotkeys.capture_screenshot:
             manager.register(cfg.hotkeys.capture_screenshot, "capture_screenshot")
         # v0.4.0: Observer hotkeys. Always gated by observer.enabled; the
@@ -851,6 +857,40 @@ def main(argv: list[str] | None = None) -> int:
     tray.open_wizard_action.triggered.connect(open_wizard)
     tray.quit_action.triggered.connect(app.quit)
 
+    def open_last_observer_session() -> None:
+        from PySide6 import QtGui  # noqa: PLC0415
+
+        out_dir = Path(controller.draft.observer.resolved_output_dir).expanduser()
+        exports = sorted(out_dir.glob("*/session.md"), key=lambda p: p.stat().st_mtime)
+        if not exports:
+            tray.show_message("Observer", "No compiled sessions yet.")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(exports[-1])))
+
+    def delete_all_observer_sessions() -> None:
+        if observer_controller is None:
+            return
+        if observer_controller.is_active:  # type: ignore[attr-defined]
+            tray.show_message("Observer", "Stop the current session before deleting sessions.")
+            return
+        confirm = QtWidgets.QMessageBox.question(
+            None,
+            "Delete all Observer sessions?",
+            "This permanently deletes every recorded session and its exports.",
+        )
+        if confirm != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            count = observer_controller.store.purge_all()  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Deleting Observer sessions failed")
+            tray.show_message("Observer", "Could not delete sessions.", icon=2)
+            return
+        tray.show_message("Observer", f"Deleted {count} session(s).")
+
+    tray.open_last_action.triggered.connect(open_last_observer_session)
+    tray.delete_all_action.triggered.connect(delete_all_observer_sessions)
+
     def on_error(event: object) -> None:
         message = getattr(event, "message", "Unknown error")
         stage = getattr(event, "stage", "unknown")
@@ -858,6 +898,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Pipeline error [%s]: %s (recoverable=%s)", stage, message, recoverable)
         if not recoverable:
             tray.show_message("agentvoca Error", f"Error in {stage}: {message}", icon=2)
+        else:
+            tray.show_message("agentvoca", message, icon=1)
 
     event_bus.subscribe(ErrorEvent, on_error)
 
@@ -1046,6 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
             max_duration_s=cfg.audio.max_recording_duration_s,
             chunker=chunker,
             loop=loop_thread.loop,
+            auto_stop=cfg.app.mode == "auto_stop",
         )
         try:
             audio.start()

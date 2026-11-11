@@ -1,7 +1,7 @@
 [project]
 name = "agentvoca"
 version = "0.4.1"
-description = "A developer-first, model-agnostic voice dictation desktop app."
+description = "A model-agnostic voice dictation desktop app."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<3.14"

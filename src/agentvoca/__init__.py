@@ -1,4 +1,4 @@
-"""AgentVoca — a developer-first, model-agnostic voice dictation desktop app."""
+"""AgentVoca — a model-agnostic voice dictation desktop app."""
 
 # Single source of truth for the running app's version. This constant is always
 # bundled into the PyInstaller build (it's source code), unlike package metadata

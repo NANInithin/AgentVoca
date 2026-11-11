@@ -667,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="agentvoca",
-        description="A developer-first, model-agnostic voice dictation desktop app.",
+        description="A model-agnostic voice dictation desktop app.",
         epilog=(
             "Configure via ~/.agentvoca/config.yaml. "
             "See docs/config-reference.md for available options."

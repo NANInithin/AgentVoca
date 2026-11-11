@@ -1261,6 +1261,8 @@ class Orchestrator:
         # _extract_one. Concurrency is naturally bounded by the
         # persistent httpx client's max_connections=4 (R8) — extra
         # shots queue inside the connection pool, no semaphore needed.
+        failures: list[str] = []
+
         async def _extract_one(shot: bytes) -> Optional[str]:
             try:
                 extracted = await self._vision_provider.extract(
@@ -1268,11 +1270,20 @@ class Orchestrator:
                 )
             except VisionError as exc:
                 logger.warning("Vision extraction failed for a screenshot: %s", exc)
+                failures.append(str(exc))
                 return None
             return extracted.strip() if extracted and extracted.strip() else None
 
         results = await asyncio.gather(*(_extract_one(s) for s in shots))
         extractions = [r for r in results if r]
+        if failures:
+            self._emit_error(
+                stage="vision",
+                message=f"Screenshot reading failed for {len(failures)} of {len(shots)} "
+                "screenshot(s). Check the Vision API key and model in Settings.",
+                recoverable=True,
+                detail=failures[0],
+            )
 
         if not extractions:
             return text, False

@@ -898,6 +898,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Pipeline error [%s]: %s (recoverable=%s)", stage, message, recoverable)
         if not recoverable:
             tray.show_message("agentvoca Error", f"Error in {stage}: {message}", icon=2)
+        else:
+            tray.show_message("agentvoca", message, icon=1)
 
     event_bus.subscribe(ErrorEvent, on_error)
 

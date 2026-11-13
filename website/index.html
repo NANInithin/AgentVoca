@@ -100,6 +100,10 @@
     .lede { font-size: 1.15rem; color: var(--muted-foreground); max-width: 40rem; margin: 0 auto; }
     .hero-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: .75rem; margin-top: 2.25rem; }
     .hero-meta { margin-top: 1.25rem; font-size: .8rem; color: var(--muted-foreground); }
+    .hero-command { margin: 1.5rem 0 0; padding: 1rem 1.15rem; background: var(--ink); color: var(--ink-foreground); border-radius: var(--radius); font-size: .8rem; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .hero-install-note { margin: .65rem 0 0; font-size: .8rem; color: var(--muted-foreground); }
+    .hero-install-note a { text-decoration: underline; text-underline-offset: 4px; }
+    .hero .hero-actions { margin-top: 1.25rem; }
 
     /* Demo */
     .demo {
@@ -185,6 +189,11 @@
     .command-heading a { text-decoration: underline; text-underline-offset: 4px; }
     .install-command pre { background: var(--ink); color: var(--ink-foreground); padding: 1.25rem; border-radius: var(--radius); overflow-x: auto; font-size: .8rem; line-height: 1.8; }
     .install-command p, .release-note { color: var(--muted-foreground); font-size: .85rem; }
+    .install-command h3 { font-size: 1.05rem; font-weight: 600; margin: .75rem 0 .4rem; }
+    .install-command p code, .setup-note code { overflow-wrap: anywhere; }
+    .install-command p a, .setup-note a { text-decoration: underline; text-underline-offset: 4px; }
+    .setup-heading { margin-top: 2.5rem; }
+    .setup-note { margin: 1.5rem 0 0; color: var(--muted-foreground); font-size: .88rem; }
     .updates { padding: 2.5rem 0; border-top: 1px solid var(--border); background: var(--muted); }
     .updates h2 { font-size: 2.25rem; max-width: none; }
     .update-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; margin-top: 1.5rem; }
@@ -240,12 +249,14 @@
         <span class="pill"><span class="dot"></span>Local-first · Open source · MIT</span>
         <h1>You speak. <em>It types.</em></h1>
         <p class="lede">Voice dictation for whatever you’re working on. Choose local or cloud models, speak naturally, and get clean text at your cursor—in chat, docs, your editor, or any app.</p>
+        <pre class="hero-command"><code>uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"</code></pre>
+        <p class="hero-install-note">Windows · macOS · Linux. <a href="https://docs.astral.sh/uv/getting-started/installation/">Install uv first ↗</a> Then run <code>agentvoca</code>.</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases/latest">
+          <a class="btn btn-primary" href="#install">Install with uv</a>
+          <a class="btn btn-ghost" href="https://github.com/NANInithin/AgentVoca/releases/latest">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
             Download v0.4.1 for Windows
           </a>
-          <a class="btn btn-ghost" href="#install">Install the latest</a>
         </div>
         <p class="hero-meta">Offline after the first model download. No API key or account needed.</p>
         </div>
@@ -381,24 +392,44 @@
       <div class="wrap">
         <span class="eyebrow">Install</span>
         <h2>A shorter path to your first dictation.</h2>
-        <p class="section-lede">Install from the latest repository for the new setup and fixes. The Windows download is still v0.4.1 and predates these changes.</p>
+        <p class="section-lede">Install with uv, download the Windows app, or run from source. Choose the option that fits your machine.</p>
         <div class="install-command">
-          <div class="command-heading"><span class="eyebrow">Latest · Windows &amp; macOS</span><a href="https://docs.astral.sh/uv/getting-started/installation/">Install uv ↗</a></div>
+          <div class="command-heading"><span class="eyebrow">Option A · Windows, macOS &amp; Linux</span><a href="https://docs.astral.sh/uv/getting-started/installation/">Install uv ↗</a></div>
+          <h3>One command with uv</h3>
+          <p>Install uv first, then install AgentVoca and start the app:</p>
           <pre><code>uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"
 agentvoca</code></pre>
-          <p>uv manages Python 3.11–3.13 for you. Linux installation is also available; microphone support needs PortAudio, and some desktop capture features are Windows-only.</p>
+          <p>uv downloads a supported Python (3.11–3.13) if needed and adds the <code>agentvoca</code> command to your PATH.</p>
+          <p>Upgrade with <code>uv tool upgrade agentvoca</code>. Remove with <code>uv tool uninstall agentvoca</code>.</p>
+          <p>Linux needs PortAudio for the microphone. On Debian or Ubuntu, run <code>sudo apt install libportaudio2</code>. Some desktop capture features are Windows-only.</p>
         </div>
+        <div class="install-command">
+          <div class="command-heading"><span class="eyebrow">Option B · Windows</span><a href="https://github.com/NANInithin/AgentVoca/releases">View releases ↗</a></div>
+          <h3>Download the app. No Python needed.</h3>
+          <p>Download the latest <code>AgentVoca-vX.X.X-windows-x64.zip</code> from the Releases page, extract it, and double-click <code>AgentVoca.exe</code>.</p>
+          <p>The Windows download is still v0.4.1 and predates the latest setup changes. Use Option A for the latest repository version.</p>
+        </div>
+        <div class="install-command">
+          <div class="command-heading"><span class="eyebrow">Option C · Developers</span><a href="https://github.com/NANInithin/AgentVoca/blob/main/README.md#installation">README ↗</a></div>
+          <h3>Run from source</h3>
+          <pre><code>git clone https://github.com/NANInithin/AgentVoca.git
+cd AgentVoca
+uv sync
+uv run agentvoca</code></pre>
+        </div>
+        <h3 class="setup-heading">First launch</h3>
+        <p class="setup-note">AgentVoca starts in the system tray and opens a short setup. Choose speech-to-text and cleanup; everything else uses sensible defaults.</p>
         <div class="install">
           <div class="card">
             <span class="eyebrow">01</span>
             <h3>Choose speech-to-text</h3>
-            <p>The welcome screen opens once. Pick a free local Whisper model or a cloud provider and model.</p>
+            <p>Pick a free local Whisper model or a cloud provider and model. Local speech works offline after the first model download.</p>
             <code>Local · OpenAI · Groq · OpenRouter</code>
           </div>
           <div class="card">
             <span class="eyebrow">02</span>
             <h3>Choose cleanup</h3>
-            <p>Use Off, offline Rules, or an AI model. Paste a cloud key once; it’s saved securely by your operating system.</p>
+            <p>Use offline rules or an AI model to polish your text. For cloud models, choose a provider and model, then paste your API key.</p>
             <code>Off · Rules · Local or cloud AI</code>
           </div>
           <div class="card">
@@ -408,6 +439,9 @@ agentvoca</code></pre>
             <code>Ctrl+Space → speak → Ctrl+Space</code>
           </div>
         </div>
+        <p class="setup-note">No API key is needed by default: local faster-whisper and rules-based cleanup work offline. The first launch downloads your Whisper model (about 145 MB for base.en).</p>
+        <p class="setup-note">Cloud keys stay in Windows Credential Manager, macOS Keychain, or Linux Secret Service—not a plain file. Delete a key anytime, keep it until you delete it or close the app, or expire it after 1, 7, 30, or 90 days. Without a credential store, keys last only for the current session. Your own environment variables take priority over saved keys.</p>
+        <p class="setup-note">Change your choices anytime in <b>Settings…</b> from the tray menu. <a href="https://github.com/NANInithin/AgentVoca/blob/main/docs/user-setup.md">Read the full setup guide ↗</a></p>
       </div>
     </section>
 
@@ -415,7 +449,7 @@ agentvoca</code></pre>
       <div class="wrap">
         <h2>Stop typing. <em class="serif">Start talking.</em></h2>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">Download AgentVoca</a>
+          <a class="btn btn-primary" href="#install">Install with uv</a>
           <a class="btn btn-ghost" href="https://github.com/NANInithin/AgentVoca">Star on GitHub</a>
         </div>
       </div>

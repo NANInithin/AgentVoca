@@ -33,7 +33,8 @@ def _register_cuda_dlls() -> None:
 
     The original approach used importlib.util.find_spec which silently returns
     a spec with origin=None for namespace packages (nvidia.*), so no directory
-    was ever registered.  This version walks site-packages directly.
+    was ever registered.  This version walks site-packages directly and adds
+    each directory both via add_dll_directory and to PATH.
     """
     if sys.platform != "win32":
         return
@@ -48,21 +49,36 @@ def _register_cuda_dlls() -> None:
     if user_site and user_site not in search_roots:
         search_roots.append(user_site)
 
+    bin_dirs: list[str] = []
     for root in search_roots:
         nvidia_dir = os.path.join(root, "nvidia")
         if not os.path.isdir(nvidia_dir):
             continue
         try:
-            for name in os.listdir(nvidia_dir):
+            for name in sorted(os.listdir(nvidia_dir)):
                 bin_dir = os.path.join(nvidia_dir, name, "bin")
                 if os.path.isdir(bin_dir):
-                    try:
-                        os.add_dll_directory(bin_dir)
-                        logger.debug("Registered CUDA DLL directory: %s", bin_dir)
-                    except Exception:
-                        pass
+                    bin_dirs.append(bin_dir)
         except Exception:
             pass
+
+    for bin_dir in bin_dirs:
+        try:
+            os.add_dll_directory(bin_dir)
+            logger.debug("Registered CUDA DLL directory: %s", bin_dir)
+        except Exception:
+            pass
+
+    # CTranslate2 loads cuBLAS/cuDNN lazily with plain LoadLibrary, which
+    # ignores add_dll_directory and only searches the legacy order (PATH).
+    if bin_dirs:
+        current = os.environ.get("PATH", "")
+        existing = {p.lower() for p in current.split(os.pathsep) if p}
+        missing = [d for d in bin_dirs if d.lower() not in existing]
+        if missing:
+            os.environ["PATH"] = (
+                os.pathsep.join([*missing, current]) if current else os.pathsep.join(missing)
+            )
 
 
 _register_cuda_dlls()

@@ -8,10 +8,10 @@
   <link rel="canonical" href="https://agentvoca.naninithin.me/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://agentvoca.naninithin.me/">
-  <meta property="og:title" content="AgentVoca — Voice dictation for developers">
+  <meta property="og:title" content="AgentVoca — Voice dictation for any app">
   <meta property="og:description" content="Local-first, model-agnostic dictation that keeps code, paths and URLs intact. Screenshot-to-text and Observer mode built in.">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="AgentVoca — Voice dictation for developers">
+  <meta name="twitter:title" content="AgentVoca — Voice dictation for any app">
   <meta name="twitter:description" content="Local-first, model-agnostic dictation that keeps code, paths and URLs intact.">
   <meta name="theme-color" content="#f7f5f0">
   <link rel="icon" href="https://raw.githubusercontent.com/NANInithin/NANInithin.github.io/main/Assets/77537690.png">
@@ -35,7 +35,8 @@
       --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-serif: "Instrument Serif", Georgia, serif;
       --font-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-      --radius: 14px;
+      --radius: 8px;
+      --shadow-demo: 0 30px 60px -30px oklch(0.2 0.01 60 / 25%);
     }
     *, *::before, *::after { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -57,7 +58,7 @@
       border-bottom: 1px solid var(--border);
     }
     .header-inner { display: flex; align-items: center; gap: 2rem; height: 3.75rem; }
-    .brand { display: flex; align-items: center; gap: .55rem; font-weight: 600; letter-spacing: -.01em; }
+    .brand { display: flex; align-items: center; gap: .55rem; font-weight: 600; letter-spacing: 0; }
     .brand img { width: 1.9rem; height: 1.9rem; object-fit: contain; }
     .nav { display: none; gap: 1.5rem; font-size: .9rem; color: var(--muted-foreground); }
     .nav a:hover { color: var(--foreground); }
@@ -78,32 +79,37 @@
     .btn svg { width: 1rem; height: 1rem; }
 
     /* Hero */
-    .hero { padding: 4rem 0; min-height: calc(100vh - 64px); display: flex; align-items: center; }
+    .hero { padding: 3rem 0; min-height: min(640px, calc(100svh - 110px)); display: flex; align-items: center; }
     .hero-grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 3rem; align-items: center; width: 100%; }
-    .hero h1 { margin-left: 0; font-size: clamp(2.75rem, 5.5vw, 4.75rem); }
+    .hero h1 { margin-left: 0; font-size: 4.25rem; }
     .hero .lede { margin: 0; }
     .hero .hero-actions { justify-content: flex-start; }
     .hero .demo { margin: 0; max-width: none; }
-    @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } .hero { min-height: 0; } }
+    @media (max-width: 1050px) { .hero-grid { gap: 2rem; } .hero h1 { font-size: 3.5rem; } .header-inner { gap: 1.25rem; } .nav { gap: 1rem; } }
+    @media (max-width: 760px) { .hero-grid { grid-template-columns: 1fr; } .hero { min-height: 0; padding: 2.5rem 0; } .hero h1 { font-size: 3rem; } h2 { font-size: 2.5rem; } .wrap { padding: 0 1.25rem; } section.block { padding: 4rem 0; } }
     .pill {
       display: inline-flex; align-items: center; gap: .5rem; padding: .3rem .8rem; border-radius: 999px;
       border: 1px solid var(--border); background: var(--card); font-size: .8rem; color: var(--muted-foreground);
     }
     .pill .dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--ok); }
     h1 {
-      font-family: var(--font-serif); font-weight: 400; letter-spacing: -.02em;
-      font-size: clamp(3rem, 8vw, 5.75rem); line-height: 1; margin: 1.5rem auto 1.25rem; max-width: 14ch;
+      font-family: var(--font-serif); font-weight: 400; letter-spacing: 0;
+      font-size: 4.25rem; line-height: 1; margin: 1.5rem auto 1.25rem; max-width: 14ch;
     }
-    h1 em { font-style: italic; color: var(--primary); }
+    h1 em { display: inline-block; font-style: italic; color: var(--primary); }
     .lede { font-size: 1.15rem; color: var(--muted-foreground); max-width: 40rem; margin: 0 auto; }
     .hero-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: .75rem; margin-top: 2.25rem; }
     .hero-meta { margin-top: 1.25rem; font-size: .8rem; color: var(--muted-foreground); }
+    .hero-command { margin: 1.5rem 0 0; padding: 1rem 1.15rem; background: var(--ink); color: var(--ink-foreground); border-radius: var(--radius); font-size: .8rem; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .hero-install-note { margin: .65rem 0 0; font-size: .8rem; color: var(--muted-foreground); }
+    .hero-install-note a { text-decoration: underline; text-underline-offset: 4px; }
+    .hero .hero-actions { margin-top: 1.25rem; }
 
     /* Demo */
     .demo {
       margin: 4rem auto 0; max-width: 760px; text-align: left; background: var(--card);
-      border: 1px solid var(--border); border-radius: 20px;
-      box-shadow: 0 30px 60px -30px oklch(0.2 0.01 60 / 25%);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow-demo);
       overflow: hidden;
     }
     .demo-bar { display: flex; align-items: center; gap: .4rem; padding: .8rem 1rem; border-bottom: 1px solid var(--border); }
@@ -111,10 +117,10 @@
     .demo-bar .title { margin-left: .75rem; width: auto; height: auto; background: none; font-size: .78rem; color: var(--muted-foreground); font-family: var(--font-mono); }
     .demo-body { padding: 1.5rem 1.5rem 1.75rem; display: grid; gap: 1.1rem; }
     .row-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .12em; color: var(--muted-foreground); margin-bottom: .35rem; }
-    .said { font-family: var(--font-serif); font-size: 1.35rem; font-style: italic; color: var(--muted-foreground); min-height: 2rem; }
+    .said { font-family: var(--font-serif); font-size: 1.35rem; font-style: italic; color: var(--muted-foreground); min-height: 7rem; overflow-wrap: anywhere; }
     .typed {
       font-family: var(--font-mono); font-size: .9rem; background: var(--muted); border-radius: 10px;
-      padding: .9rem 1rem; min-height: 3.2rem; white-space: pre-wrap;
+      padding: .9rem 1rem; min-height: 7.5rem; white-space: pre-wrap; overflow-wrap: anywhere;
     }
     .typed .tok { color: var(--primary); }
     .caret { display: inline-block; width: .5rem; height: 1rem; background: var(--foreground); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
@@ -135,7 +141,7 @@
     /* Sections */
     section.block { padding: 6rem 0; border-top: 1px solid var(--border); }
     .eyebrow { font-family: var(--font-mono); font-size: .75rem; color: var(--primary); letter-spacing: .08em; text-transform: uppercase; }
-    h2 { font-family: var(--font-serif); font-weight: 400; font-size: clamp(2.2rem, 4.5vw, 3.25rem); line-height: 1.05; letter-spacing: -.015em; margin: .75rem 0 1rem; max-width: 20ch; }
+    h2 { font-family: var(--font-serif); font-weight: 400; font-size: 3.25rem; line-height: 1.05; letter-spacing: 0; margin: .75rem 0 1rem; max-width: 20ch; }
     .section-lede { color: var(--muted-foreground); max-width: 38rem; margin: 0 0 3rem; }
 
     .steps { display: grid; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
@@ -178,6 +184,24 @@
     pre.code .k { color: oklch(0.8 0.1 45); }
     pre.code .v { color: oklch(0.82 0.1 150); }
 
+    .install-command { margin-bottom: 1.5rem; border-block: 1px solid var(--border); padding: 1.5rem 0; }
+    .command-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .75rem; font-size: .85rem; }
+    .command-heading a { text-decoration: underline; text-underline-offset: 4px; }
+    .install-command pre { background: var(--ink); color: var(--ink-foreground); padding: 1.25rem; border-radius: var(--radius); overflow-x: auto; font-size: .8rem; line-height: 1.8; }
+    .install-command p, .release-note { color: var(--muted-foreground); font-size: .85rem; }
+    .install-command h3 { font-size: 1.05rem; font-weight: 600; margin: .75rem 0 .4rem; }
+    .install-command p code, .setup-note code { overflow-wrap: anywhere; }
+    .install-command p a, .setup-note a { text-decoration: underline; text-underline-offset: 4px; }
+    .setup-heading { margin-top: 2.5rem; }
+    .setup-note { margin: 1.5rem 0 0; color: var(--muted-foreground); font-size: .88rem; }
+    .updates { padding: 2.5rem 0; border-top: 1px solid var(--border); background: var(--muted); }
+    .updates h2 { font-size: 2.25rem; max-width: none; }
+    .update-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; margin-top: 1.5rem; }
+    .update-grid h3 { font-size: .95rem; margin: 0 0 .4rem; }
+    .update-grid p { font-size: .88rem; color: var(--muted-foreground); margin: 0; }
+    @media (max-width: 760px) { .update-grid { grid-template-columns: 1fr; gap: 1.25rem; } }
+    .hero-copy, .demo, .step, .card { min-width: 0; }
+    a:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
     .install { display: grid; gap: 1rem; }
     @media (min-width: 820px) { .install { grid-template-columns: repeat(3, 1fr); } }
     .install .card { padding: 1.5rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); }
@@ -222,17 +246,19 @@
   <main id="top">
     <section class="hero">
       <div class="wrap hero-grid"><div class="hero-copy">
-        <span class="pill"><span class="dot"></span>v0.4.1 · Windows &amp; macOS · MIT</span>
+        <span class="pill"><span class="dot"></span>Local-first · Open source · MIT</span>
         <h1>You speak. <em>It types.</em></h1>
-        <p class="lede">Voice dictation built for developers. Use any speech model with any cleanup model, local or cloud, and get clean text at your cursor in any app. It leaves your code, file paths and URLs alone.</p>
+        <p class="lede">Voice dictation for whatever you’re working on. Choose local or cloud models, speak naturally, and get clean text at your cursor—in chat, docs, your editor, or any app.</p>
+        <pre class="hero-command"><code>uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"</code></pre>
+        <p class="hero-install-note">Windows · macOS · Linux. <a href="https://docs.astral.sh/uv/getting-started/installation/">Install uv first ↗</a> Then run <code>agentvoca</code>.</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">
+          <a class="btn btn-primary" href="#install">Install with uv</a>
+          <a class="btn btn-ghost" href="https://github.com/NANInithin/AgentVoca/releases/latest">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-            Download for Windows
+            Download v0.4.1 for Windows
           </a>
-          <a class="btn btn-ghost" href="#install">Run from source</a>
         </div>
-        <p class="hero-meta">Runs fully offline by default. No API key. No account.</p>
+        <p class="hero-meta">Offline after the first model download. No API key or account needed.</p>
         </div>
         <div class="demo" aria-label="Dictation demo">
           <div class="demo-bar"><span></span><span></span><span></span><span class="title" id="demo-app">VS Code — commit message</span></div>
@@ -251,16 +277,29 @@
       </div>
     </section>
 
+    <section class="updates" aria-labelledby="updates-title">
+      <div class="wrap">
+        <span class="eyebrow">Latest on main · November 2026</span>
+        <h2 id="updates-title">Less setup. More speaking.</h2>
+        <div class="update-grid">
+          <div><h3>Two choices, then you’re ready</h3><p>A welcome screen, speech-to-text, and cleanup. No manual folders or config editing. Cloud keys stay saved in your OS credential store.</p></div>
+          <div><h3>Change models without restarting</h3><p>Switch your speech provider or model and cleanup settings while the app is running. Settings tells you when other changes need a restart.</p></div>
+          <div><h3>Recording that follows your mode</h3><p>Hold to talk, toggle to start and stop, or auto-stop after speech and silence. Cleanup and screenshot failures now show a tray warning.</p></div>
+        </div>
+        <p class="release-note">Available with the latest repository install. <a href="https://github.com/NANInithin/AgentVoca/compare/v0.4.1...main">See changes since v0.4.1 ↗</a></p>
+      </div>
+    </section>
+
     <section class="block" id="how">
       <div class="wrap">
         <span class="eyebrow">How it works</span>
         <h2>Four steps from voice to cursor.</h2>
-        <p class="section-lede">Each step can use a different provider, and you can swap any of them with one line in your config.</p>
+        <p class="section-lede">Choose your speech and cleanup models in setup. Change them later in Settings—no config editing needed.</p>
         <div class="steps">
           <div class="step"><span class="n">01</span><h3>Listen</h3><p>Hold a key to talk, press once to start and stop, or let it stop when you go quiet.</p><div class="opts">push_to_talk · toggle · auto_stop</div></div>
-          <div class="step"><span class="n">02</span><h3>Transcribe</h3><p>Turn speech into text on your machine, or send it to any OpenAI-compatible endpoint.</p><div class="opts">faster-whisper · openai_compatible</div></div>
-          <div class="step"><span class="n">03</span><h3>Clean up</h3><p>Remove filler, fix punctuation and apply your vocabulary. It never rewrites technical text.</p><div class="opts">rules · ollama · openai_compatible</div></div>
-          <div class="step"><span class="n">04</span><h3>Insert</h3><p>Types straight into the focused app. Falls back to clipboard paste, with one-key undo.</p><div class="opts">keyboard · clipboard · undo</div></div>
+          <div class="step"><span class="n">02</span><h3>Transcribe</h3><p>Use a free local model, or choose OpenAI, Groq, OpenRouter, or a custom speech endpoint.</p><div class="opts">faster-whisper · openai_compatible</div></div>
+          <div class="step"><span class="n">03</span><h3>Clean up</h3><p>Keep the transcript as-is, use offline rules, or choose an AI model to polish it while preserving technical details.</p><div class="opts">rules · ollama · openai_compatible</div></div>
+          <div class="step"><span class="n">04</span><h3>Insert</h3><p>Types into the focused app, with clipboard fallback, undo, and reinsert. Clipboard contents are restored if you haven’t copied something else.</p><div class="opts">keyboard · clipboard · undo</div></div>
         </div>
       </div>
     </section>
@@ -269,9 +308,9 @@
       <div class="wrap">
         <span class="eyebrow">Features</span>
         <h2>Simple by default. Extra features when you want them.</h2>
-        <p class="section-lede">Your basic setup keeps working as you add more. Every advanced feature is off until you turn it on.</p>
+        <p class="section-lede">Start with speech-to-text and cleanup. Streaming, commands, screenshot extraction, and Observer stay off until you choose them.</p>
         <div class="features">
-          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg></div><h3>Leaves technical text alone</h3><p>Code names, URLs, file paths and command-line flags come through exactly as you said them.</p></div>
+          <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg></div><h3>Leaves technical text alone</h3><p>Cleanup protects code identifiers, URLs, file paths, command-line flags, and structured tables.</p></div>
           <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h3l3-8 4 16 3-8h5"/></svg></div><h3>Live text<span class="tag">opt-in</span></h3><p>Words show up in the overlay as you speak, so you can see it's working.</p></div>
           <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg></div><h3>Adapts to each app<span class="tag">opt-in</span></h3><p>Short and casual in chat, plain in your editor, polished in email. Picked from the app you're in.</p></div>
           <div class="feature"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h6"/></svg></div><h3>Voice commands<span class="tag">opt-in</span></h3><p>Say "new paragraph", "scratch that" and similar commands without lifting a finger.</p></div>
@@ -304,7 +343,7 @@
           </div>
           <div class="use">
             <h3>Recording a work session</h3>
-            <p>Observer mode records what you say, what's on screen and what you highlight, then writes it up as a readable summary, with a structured data file alongside.</p>
+            <p>Observer mode records what you say, what's on screen and what you highlight, then writes it up as a readable summary, with a structured data file alongside. Open the last session or delete sessions from the tray menu. It records and summarizes; it doesn’t execute tasks.</p>
             <div class="quote"><div class="s">Session · 38 min · 14 keyframes · 6 selections</div><div class="o">→ session-2026-11-10.md · session.json</div></div>
           </div>
           <div class="use">
@@ -313,7 +352,7 @@
           </div>
           <div class="use">
             <h3>Privacy-sensitive work</h3>
-            <p>Use local speech and cleanup models for client code, health notes or anything under NDA. Your audio never leaves your machine.</p>
+            <p>Use local speech and cleanup models for client code, health notes or anything under NDA. With local providers selected, your audio stays on your machine.</p>
           </div>
         </div>
       </div>
@@ -324,25 +363,25 @@
         <div>
           <span class="eyebrow">Local-first &amp; model-agnostic</span>
           <h2>Your models. Your machine.</h2>
-          <p class="section-lede" style="margin-bottom:2rem">The default setup runs fully offline. Point any step at Ollama, OpenAI or any compatible endpoint when you want to, and only that step sends data out.</p>
+          <p class="section-lede" style="margin-bottom:2rem">The default setup uses local speech recognition and offline cleanup. Cloud providers are your choice, and only the steps you configure for cloud use send data to that provider.</p>
           <ul class="list">
             <li><span><b>Offline by default.</b> Uses faster-whisper and rule-based cleanup, with no key or account needed.</span></li>
             <li><span><b>Clear consent in Observer mode.</b> An on-screen badge and a red tray icon show the whole time it's recording.</span></li>
-            <li><span><b>Exclusions and retention.</b> Skips password managers and private windows, has a pause hotkey, and deletes sessions after 7 days.</span></li>
-            <li><span><b>No hidden uploads.</b> Screenshots go out only when you snip one and turn on a cloud vision model.</span></li>
+            <li><span><b>Exclusions and control.</b> Observer includes app exclusions and pause/resume. Retention has limits: stale open sessions and exports in custom folders may need manual deletion.</span></li>
+            <li><span><b>Cloud is opt-in.</b> Cloud speech, cleanup, vision, or Observer providers send the relevant audio, text, or screen content to your chosen endpoint.</span></li>
+            <li><span><b>Keys stay in your OS credential store.</b> Save a key once, delete it anytime, or choose when it expires. Without a credential store, it stays in memory for that session only.</span></li>
           </ul>
         </div>
 <pre class="code"><span class="c"># ~/.agentvoca/config.yaml</span>
 <span class="k">asr</span>:
   <span class="k">provider</span>: <span class="v">faster_whisper</span>   <span class="c"># or openai_compatible</span>
-  <span class="k">model</span>: <span class="v">small.en</span>
+  <span class="k">model</span>: <span class="v">base.en</span>
 <span class="k">cleanup</span>:
-  <span class="k">provider</span>: <span class="v">ollama</span>           <span class="c"># rules · openai_compatible</span>
-  <span class="k">model</span>: <span class="v">qwen2.5:3b</span>
+  <span class="k">provider</span>: <span class="v">rules</span>            <span class="c"># or your chosen AI model</span>
 <span class="k">app</span>:
-  <span class="k">mode</span>: <span class="v">push_to_talk</span>
+  <span class="k">mode</span>: <span class="v">toggle</span>
 <span class="k">streaming</span>:
-  <span class="k">enabled</span>: <span class="v">true</span>
+  <span class="k">enabled</span>: <span class="v">false</span>
 <span class="k">observer</span>:
   <span class="k">enabled</span>: <span class="v">false</span>
   <span class="k">compile</span>: { <span class="k">provider</span>: <span class="v">rules</span> }</pre>
@@ -352,28 +391,57 @@
     <section class="block" id="install">
       <div class="wrap">
         <span class="eyebrow">Install</span>
-        <h2>Set up in under a minute.</h2>
-        <p class="section-lede">A setup wizard opens the first time you run it. Choose "Use defaults" to start offline right away, or customize every setting.</p>
+        <h2>A shorter path to your first dictation.</h2>
+        <p class="section-lede">Install with uv, download the Windows app, or run from source. Choose the option that fits your machine.</p>
+        <div class="install-command">
+          <div class="command-heading"><span class="eyebrow">Option A · Windows, macOS &amp; Linux</span><a href="https://docs.astral.sh/uv/getting-started/installation/">Install uv ↗</a></div>
+          <h3>One command with uv</h3>
+          <p>Install uv first, then install AgentVoca and start the app:</p>
+          <pre><code>uv tool install "agentvoca @ git+https://github.com/NANInithin/AgentVoca"
+agentvoca</code></pre>
+          <p>uv downloads a supported Python (3.11–3.13) if needed and adds the <code>agentvoca</code> command to your PATH.</p>
+          <p>Upgrade with <code>uv tool upgrade agentvoca</code>. Remove with <code>uv tool uninstall agentvoca</code>.</p>
+          <p>Linux needs PortAudio for the microphone. On Debian or Ubuntu, run <code>sudo apt install libportaudio2</code>. Some desktop capture features are Windows-only.</p>
+        </div>
+        <div class="install-command">
+          <div class="command-heading"><span class="eyebrow">Option B · Windows</span><a href="https://github.com/NANInithin/AgentVoca/releases">View releases ↗</a></div>
+          <h3>Download the app. No Python needed.</h3>
+          <p>Download the latest <code>AgentVoca-vX.X.X-windows-x64.zip</code> from the Releases page, extract it, and double-click <code>AgentVoca.exe</code>.</p>
+          <p>The Windows download is still v0.4.1 and predates the latest setup changes. Use Option A for the latest repository version.</p>
+        </div>
+        <div class="install-command">
+          <div class="command-heading"><span class="eyebrow">Option C · Developers</span><a href="https://github.com/NANInithin/AgentVoca/blob/main/README.md#installation">README ↗</a></div>
+          <h3>Run from source</h3>
+          <pre><code>git clone https://github.com/NANInithin/AgentVoca.git
+cd AgentVoca
+uv sync
+uv run agentvoca</code></pre>
+        </div>
+        <h3 class="setup-heading">First launch</h3>
+        <p class="setup-note">AgentVoca starts in the system tray and opens a short setup. Choose speech-to-text and cleanup; everything else uses sensible defaults.</p>
         <div class="install">
           <div class="card">
             <span class="eyebrow">01</span>
-            <h3>Download</h3>
-            <p>Get the latest Windows zip from Releases and extract it anywhere.</p>
-            <code>AgentVoca-vX.X.X-windows-x64.zip</code>
+            <h3>Choose speech-to-text</h3>
+            <p>Pick a free local Whisper model or a cloud provider and model. Local speech works offline after the first model download.</p>
+            <code>Local · OpenAI · Groq · OpenRouter</code>
           </div>
           <div class="card">
             <span class="eyebrow">02</span>
-            <h3>Create the config folder</h3>
-            <p>Run this once in PowerShell.</p>
-            <code>New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agentvoca"</code>
+            <h3>Choose cleanup</h3>
+            <p>Use offline rules or an AI model to polish your text. For cloud models, choose a provider and model, then paste your API key.</p>
+            <code>Off · Rules · Local or cloud AI</code>
           </div>
           <div class="card">
             <span class="eyebrow">03</span>
-            <h3>Run it</h3>
-            <p>Start AgentVoca.exe, or run it from source on any platform with uv.</p>
-            <code>uv sync &amp;&amp; uv run agentvoca</code>
+            <h3>Save and speak</h3>
+            <p>Your config folder is created automatically. Press Ctrl+Space to start, then again to stop. More options live in tray Settings.</p>
+            <code>Ctrl+Space → speak → Ctrl+Space</code>
           </div>
         </div>
+        <p class="setup-note">No API key is needed by default: local faster-whisper and rules-based cleanup work offline. The first launch downloads your Whisper model (about 145 MB for base.en).</p>
+        <p class="setup-note">Cloud keys stay in Windows Credential Manager, macOS Keychain, or Linux Secret Service—not a plain file. Delete a key anytime, keep it until you delete it or close the app, or expire it after 1, 7, 30, or 90 days. Without a credential store, keys last only for the current session. Your own environment variables take priority over saved keys.</p>
+        <p class="setup-note">Change your choices anytime in <b>Settings…</b> from the tray menu. <a href="https://github.com/NANInithin/AgentVoca/blob/main/docs/user-setup.md">Read the full setup guide ↗</a></p>
       </div>
     </section>
 
@@ -381,7 +449,7 @@
       <div class="wrap">
         <h2>Stop typing. <em class="serif">Start talking.</em></h2>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/NANInithin/AgentVoca/releases">Download AgentVoca</a>
+          <a class="btn btn-primary" href="#install">Install with uv</a>
           <a class="btn btn-ghost" href="https://github.com/NANInithin/AgentVoca">Star on GitHub</a>
         </div>
       </div>
@@ -394,7 +462,7 @@
       <nav>
         <a href="https://github.com/NANInithin/AgentVoca">GitHub</a>
         <a href="https://github.com/NANInithin/AgentVoca/releases">Releases</a>
-        <a href="https://github.com/NANInithin/AgentVoca/tree/main/docs">Docs</a>
+        <a href="https://github.com/NANInithin/AgentVoca/blob/main/docs/user-setup.md">Setup guide</a>
         <a href="https://agentquantix.naninithin.me">AgentQuantix</a>
       </nav>
     </div>
